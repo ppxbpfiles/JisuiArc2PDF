@@ -74,6 +74,11 @@
     デフォルト値は 0.05 です。
     エイリアス: -s, -sat
 
+.PARAMETER TotalCompressionThreshold
+    圧縮後ファイルセットを使用するかの判断に使われる、圧縮率のしきい値(パーセント)です。
+    この値が指定されると、「変換後の合計サイズが、元の合計サイズのXX%未満の場合」にのみ、変換後のファイルが使用されます。
+    エイリアス: -tcr
+
 .PARAMETER Height
     画像の高さをピクセル単位で指定します。
     エイリアス: -h
@@ -107,7 +112,7 @@
 
     # B5サイズ、300dpiで高さを自動計算
     .\JisuiArc2PDF.ps1 *.rar -PaperSize B5 -Dpi 300
-#> 
+#>
 [CmdletBinding()]
 param(
     [Parameter(Position=0)]
@@ -131,6 +136,11 @@ param(
     [double]$SaturationThreshold = 0.05,
 
     [Parameter(Mandatory=$false)]
+    [Alias('tcr')]
+    [ValidateRange(0.0, 100.0)]
+    [double]$TotalCompressionThreshold,
+
+    [Parameter(Mandatory=$false)]
     [Alias('h')]
     [int]$Height,
 
@@ -142,10 +152,6 @@ param(
     [Alias('p')]
     [ValidateSet('A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B0', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7')]
     [string]$PaperSize,
-
-    [Parameter(Mandatory=$false)]
-    [Alias('mcr')]
-    [double]$MinCompressionRatio,
 
     [Parameter(Mandatory=$false)]
     [Alias('sc')]
@@ -397,9 +403,9 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         continue
     }
 
-    Write-Host "========================================";
-    Write-Host "処理中: $($archiveFileInfo.Name)";
-    Write-Host "========================================";
+    Write-Host "========================================"
+    Write-Host "処理中: $($archiveFileInfo.Name)"
+    Write-Host "========================================"
 
     # 2. 一時フォルダの作成
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
@@ -420,12 +426,12 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         $originalCount = 0
 
         # 3. アーカイブの拡張子に応じて展開
-        Write-Host "アーカイブを展開しています: $($archiveFileInfo.Name)";
+        Write-Host "アーカイブを展開しています: $($archiveFileInfo.Name)"
         # Call Operator (&) を使用して、特殊文字を含むファイルパスを正しく処理する
         & $sevenzip_exe e "$($archiveFileInfo.FullName)" "-o$tempDir" -y
 
         # 4. 画像ファイルを検索し、自然順で並べ替え
-        Write-Host "画像ファイルを検索し、並べ替えています...";
+        Write-Host "画像ファイルを検索し、並べ替えています..."
         $allFiles = Get-ChildItem -Path $tempDir -Recurse -File
         $imageFiles = @()
         foreach ($file in $allFiles) {
@@ -454,14 +460,17 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         if ($SkipCompression.IsPresent) {
             Write-Host "[情報] -SkipCompression が指定されたため、画像変換をスキップし、元のファイルを使用します。"
             $filesForPdf = $imageFiles.FullName
+            $originalCount = $imageFiles.Count
+            $convertedCount = 0
         }
         else {
             # --- 通常の画像変換処理 ---
-            Write-Host "画像を変換し、一時ファイルに保存しています...";
+            Write-Host "画像を変換し、一時ファイルに保存しています..."
             $fileCounter = 0
+            $conversionResults = @() # Holds results for each file
 
             foreach ($file in $imageFiles) {
-                Write-Host "Processing $($file.Name)...";
+                Write-Host "Processing $($file.Name)..."
                 
                 # 画像の平均彩度を計算
                 $SATURATION_STR = & $magick_exe "$($file.FullName)" -colorspace HSL -channel G -separate +channel -format "%[mean]" info:
@@ -474,7 +483,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 $originalHeight = 0
                 try {
                     $originalHeightStr = & $magick_exe identify -format "%h" "$($file.FullName)"
-                    if ($originalHeightStr -match '^\d+$') {
+                    if ($originalHeightStr -match '^\d+') {
                         $originalHeight = [int]$originalHeightStr
                     } else {
                         Write-Warning "画像の高さの取得に失敗しました: $($file.Name)"
@@ -521,39 +530,116 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                     continue # Skip to the next file
                 }
 
-                # --- Per-Image Compression Check ---
-                $useOriginal = $false
-                $logMessageDetail = ""
-
+                # --- Store conversion result ---
                 $originalSize = $file.Length
                 $convertedSize = (Get-Item -Path $destinationPath).Length
-
-                if ($originalSize -gt 0) {
-                    $actualRatio = ($convertedSize / $originalSize) * 100
-                    $actualRatioFormatted = "{0:N2}" -f $actualRatio
-                    $logMessageDetail = "(Ratio: $($actualRatioFormatted) %)"
-                }
-
-                # Decide whether to use the original image
-                if ($PSBoundParameters.ContainsKey('MinCompressionRatio')) {
-                    if ($actualRatio -ge $MinCompressionRatio) {
-                        $useOriginal = $true
-                    }
-                }
-
-                if ($useOriginal) {
-                    $filesForPdf += $file.FullName
-                    $originalCount++
-                    $logDetails += "    - $($file.Name): Original $logMessageDetail"
-                    Remove-Item -Path $destinationPath -Force
-                } else {
-                    $filesForPdf += $destinationPath
-                    $convertedCount++
-                    $logDetails += "    - $($file.Name): Converted $logMessageDetail"
+                
+                $conversionResults += [pscustomobject]@{ 
+                    FileName      = $file.Name
+                    OriginalPath  = $file.FullName
+                    OriginalSize  = $originalSize
+                    ConvertedPath = $destinationPath
+                    ConvertedSize = $convertedSize
+                    Saturation    = $SATURATION
                 }
                 
                 $fileCounter++
             } # --- foreach loop end ---
+
+            if ($conversionResults.Count -eq 0) {
+                throw "処理可能な画像ファイルが変換されませんでした。"
+            }
+
+            # --- 全体での圧縮比較 ---
+            $totalOriginalSize = ($conversionResults | Measure-Object -Property OriginalSize -Sum).Sum
+            $totalConvertedSize = ($conversionResults | Measure-Object -Property ConvertedSize -Sum).Sum
+
+            $totalOriginalSizeMB = [math]::Round($totalOriginalSize / 1MB, 2)
+            $totalConvertedSizeMB = [math]::Round($totalConvertedSize / 1MB, 2)
+
+            Write-Host "[比較] 元ファイル合計サイズ: $totalOriginalSize bytes (${totalOriginalSizeMB} MB)"
+            Write-Host "[比較] 変換後ファイル合計サイズ: $totalConvertedSize bytes (${totalConvertedSizeMB} MB)"
+
+            $useConvertedFiles = $false
+            if ($PSBoundParameters.ContainsKey('TotalCompressionThreshold')) {
+                if ($totalOriginalSize -gt 0) {
+                    $ratio = ($totalConvertedSize / $totalOriginalSize) * 100
+                    Write-Host "[比較] 圧縮率: $($ratio.ToString("F2"))% (しきい値: $TotalCompressionThreshold%)"
+                    if ($ratio -lt $TotalCompressionThreshold) {
+                        $useConvertedFiles = $true
+                    }
+                }
+            } else {
+                # デフォルトの動作：合計サイズが小さければ変換後を使用
+                if ($totalConvertedSize -lt $totalOriginalSize) {
+                    $useConvertedFiles = $true
+                }
+            }
+
+            if ($useConvertedFiles) {
+                Write-Host "[判断] 変換後ファイルの方が小さいため、変換後の画像を使用します。"
+                $filesForPdf = $conversionResults.ConvertedPath
+                $convertedCount = $conversionResults.Count
+                $originalCount = 0
+            } else {
+                Write-Host "[判断] 元ファイルの方が小さいか、圧縮率がしきい値に満たなかったため、元の画像を使用します。"
+                # 元のファイルを直接使用するとpdfcpuが対応していない形式(webp等)の場合に失敗するため、
+                # 元ファイルをリサイズせずにJPEG形式へ変換する「パススルー処理」を行う。
+                Write-Host "[情報] 元ファイルをPDF互換のJPEG形式に変換しています..."
+                $tempDirOriginalsPassthrough = Join-Path $tempDir "originals_passthrough"
+                New-Item -ItemType Directory -Path $tempDirOriginalsPassthrough | Out-Null
+                
+                $filesForPdf = @()
+                $fileCounter = 0
+                foreach ($result in $conversionResults) {
+                    $newFileName = "{0:D4}.jpg" -f $fileCounter
+                    $passthroughPath = Join-Path $tempDirOriginalsPassthrough $newFileName
+                    
+                    # パススルー処理でも彩度をチェックし、グレースケール化を適用する
+                    $passthroughArgs = @()
+                    $passthroughArgs += "$($result.OriginalPath)"
+                    
+                    if ($result.Saturation -lt $SaturationThreshold) {
+                        $passthroughArgs += "-colorspace", "Gray"
+                    }
+                    
+                    $passthroughArgs += "-quality", $Quality
+                    $passthroughArgs += "$passthroughPath"
+                    
+                    & $magick_exe @passthroughArgs
+
+                    if (-not (Test-Path $passthroughPath)) {
+                        Write-Warning "元ファイルのJPEG変換に失敗しました: $($result.OriginalPath)"
+                        # ここでは続行を試みる
+                    }
+                    else {
+                        $filesForPdf += $passthroughPath
+                    }
+                    $fileCounter++
+                }
+
+                $convertedCount = 0
+                $originalCount = $conversionResults.Count
+                # 不要になった変換後ファイル(リサイズ版)は削除します。
+                Remove-Item -Path $tempDirConverted -Recurse -Force
+            }
+
+            # --- ログ詳細の生成 ---
+            foreach ($result in $conversionResults) {
+                $logMessageDetail = ""
+                if ($result.OriginalSize -gt 0) {
+                    $actualRatio = ($result.ConvertedSize / $result.OriginalSize) * 100
+                    $actualRatioFormatted = "{0:N2}" -f $actualRatio
+                    $logMessageDetail = "(Ratio: $($actualRatioFormatted) %)"
+                }
+                
+                if ($useConvertedFiles) {
+                    $logDetails += "    - $($result.FileName): Converted $logMessageDetail"
+                } else {
+                    # We are using originals, but we log the conversion stats anyway
+                    $logDetails += "    - $($result.FileName): Original $logMessageDetail"
+                }
+            }
         }
 
         # 6. PDFの作成 (PDFCPU を使用)
@@ -580,7 +666,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         if (Test-Path $stderrPath) {
             $importStderr = Get-Content $stderrPath -Raw
             if ($importStderr -and $importStderr.Trim() -ne "") {
-                Write-Host "pdfcpu import の stderr:";
+                Write-Host "pdfcpu import の stderr:"
                 Write-Host $importStderr;
             }
         }
@@ -589,7 +675,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         if (Test-Path $stdoutPath) {
             $importStdout = Get-Content $stdoutPath -Raw
             if ($importStdout -and $importStdout.Trim() -ne "") {
-                Write-Host "pdfcpu import の stdout:";
+                Write-Host "pdfcpu import の stdout:"
                 Write-Host $importStdout;
             }
         }
@@ -625,10 +711,10 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         [System.IO.File]::SetLastWriteTime($pdfOutputPath, $archiveLastWriteTime)
         [System.IO.File]::SetCreationTime($pdfOutputPath, $archiveCreationTime)
 
-        Write-Host "----------------------------------------";
-        Write-Host "成功: PDFが作成されました。";
+        Write-Host "----------------------------------------"
+        Write-Host "成功: PDFが作成されました。"
         Write-Host $pdfOutputPath
-        Write-Host "----------------------------------------";
+        Write-Host "----------------------------------------"
 
         # ログへの書き込み
         try {
@@ -636,6 +722,35 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             
             # 実行コマンドラインの取得
             $commandLine = $MyInvocation.Line
+            if ([string]::IsNullOrWhiteSpace($commandLine)) {
+                Write-Verbose "[診断] \$MyInvocation.Line が空のため、コマンドラインを手動で再構築します。"
+                $scriptPath = $MyInvocation.MyCommand.Path
+                $argList = New-Object System.Collections.Generic.List[string]
+
+                # Position 0 のパラメータを追加
+                if ($PSBoundParameters.ContainsKey('ArchiveFilePaths')) {
+                    $PSBoundParameters['ArchiveFilePaths'] | ForEach-Object {
+                        $quotedPath = '"' + $_ + '"'
+                        $argList.Add($quotedPath)
+                    }
+                }
+
+                # その他の名前付きパラメータを追加
+                $PSBoundParameters.GetEnumerator() | Sort-Object Key | ForEach-Object {
+                    if ($_.Key -ne 'ArchiveFilePaths') {
+                        if ($_.Value -is [switch]) {
+                            if ($_.Value.IsPresent) {
+                                $argList.Add("-$($_.Key)")
+                            }
+                        } else {
+                            $argList.Add("-$($_.Key)")
+                            $quotedValue = '"' + $_.Value + '"'
+                            $argList.Add($quotedValue)
+                        }
+                    }
+                }
+                $commandLine = "pwsh -File `"$scriptPath`" $($argList -join ' ')"
+            }
 
             # Build the summary part
             $imageSummary = "Images: $($imageFiles.Count) (Converted: $convertedCount, Originals: $originalCount)"
@@ -648,8 +763,8 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             if ($PSBoundParameters.ContainsKey('PaperSize')) {
                 $logParts += "PaperSize: $PaperSize"
             }
-            if ($PSBoundParameters.ContainsKey('MinCompressionRatio')) {
-                $logParts += "MinCompressionRatio: $MinCompressionRatio"
+            if ($PSBoundParameters.ContainsKey('TotalCompressionThreshold')) {
+                $logParts += "TotalCompressionThreshold: $TotalCompressionThreshold"
             }
             $logParts += @(
                 "Height: ${targetHeight}px",
@@ -683,6 +798,6 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         }
     }
 }
-Write-Host "========================================";
-Write-Host "すべての処理が完了しました。";
-Write-Host "========================================";
+Write-Host "========================================"
+Write-Host "すべての処理が完了しました。"
+Write-Host "========================================"

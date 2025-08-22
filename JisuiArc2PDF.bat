@@ -43,8 +43,8 @@ if not "%quality_in%"=="" set "ps_params=%ps_params% -Quality %quality_in%"
 set /p sat_in="Saturation threshold [0.05]: "
 if not "%sat_in%"=="" set "ps_params=%ps_params% -SaturationThreshold %sat_in%"
 
-set /p mcr_in="Min compression ratio (optional): "
-if not "%mcr_in%"=="" set "ps_params=%ps_params% -MinCompressionRatio %mcr_in%"
+set /p tcr_in="Total compression threshold (0-100, optional): "
+if not "%tcr_in%"=="" set "ps_params=%ps_params% -TotalCompressionThreshold %tcr_in%"
 
 set /p res_choice="Resolution: 1=Height, 2=Paper+DPI [2]: "
 if "%res_choice%"=="1" goto :ask_height
