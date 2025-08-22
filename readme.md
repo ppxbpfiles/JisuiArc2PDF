@@ -241,9 +241,41 @@ pwsh -File .\JisuiArc2PDF.ps1 "C:\Scans\*.zip" -p B5 -d 300 -q 92 -s 0.04 -tcr 9
 ### 使い方
 -   **方法1（推奨）:** 処理したい書庫ファイル（`.rar`, `.zip`など）を、`JisuiArc2PDF.bat` のアイコン上にドラッグ＆ドロップします。
 -   **方法2:** `cmd.exe` やエクスプローラーのアドレスバーから、`JisuiArc2PDF.bat "対象ファイル"` のように実行します。（例: `JisuiArc2PDF.bat "*.zip"`）
-    - この際、`-LogPath` 引数を追加してログの出力先を指定することもできます (例: `JisuiArc2PDF.bat "*.zip" -LogPath "C:\MyLogs"`)。
+
+### コマンドライン引数の使用例
+
+`JisuiArc2PDF.bat` は、対話形式だけでなく、コマンドラインから引数を指定して実行することもできます。
+
+**例1: 現在のフォルダにある全てのRARファイルを処理**
+
+```batch
+JisuiArc2PDF.bat "*.rar"
+```
+- `*.rar` が処理対象のファイルとしてPowerShellスクリプトに渡されます。
+- この後、品質や解像度などの設定が対話形式で質問されます。
+
+**例2: 特定のファイル1つを処理し、ログを別のフォルダに保存**
+
+```batch
+JisuiArc2PDF.bat "C:\Scans\MyBook.zip" -LogPath "C:\PDF Logs"
+```
+- `C:\Scans\MyBook.zip` が処理対象になります。
+- ログファイル `JisuiArc2PDF_log.txt` が `C:\PDF Logs` フォルダ内に作成されます。
+
+**例3: ログファイルの名前と場所を完全に指定**
+
+```batch
+JisuiArc2PDF.bat "*.zip" -LogPath "D:\My Project\processing_log.txt"
+```
+- カレントディレクトリの全ZIPファイルが処理されます。
+- ログは `D:\My Project\` フォルダに `processing_log.txt` という名前で保存されます。
+
+**注意:**
+- `-LogPath`以外のパラメータ（例: `-Quality`や`-Height`）は、バッチファイルに引数として渡すことはできません。これらの設定は、バッチファイル実行後の対話形式のプロンプトで入力してください。
+- PowerShellスクリプト (`JisuiArc2PDF.ps1`) を直接実行する場合は、全てのパラメータをコマンドラインで指定できます。バッチファイルは、その操作を簡単にするためのラッパーです。
 
 ### **重要**: 前提条件
+
 このバッチファイルを実行するには、お使いのシステムで `pwsh.exe` がどこからでも呼び出せる状態になっている必要があります。
 
 -   **PowerShell 7 (pwsh.exe) がインストールされていること。**
