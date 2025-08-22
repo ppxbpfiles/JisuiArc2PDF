@@ -458,8 +458,41 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         $filesForPdf = @()
 
         if ($SkipCompression.IsPresent) {
-            Write-Host "[情報] -SkipCompression が指定されたため、画像変換をスキップし、元のファイルを使用します。"
-            $filesForPdf = $imageFiles.FullName
+            Write-Host "[情報] -SkipCompression: 最適化をスキップし、非JPEGファイルをJPEGに変換します。"
+
+            # JPEGと見なす拡張子のリスト (小文字)
+            $jpegExtensions = @('.jpg', '.jpeg', '.jfif', '.jpe')
+            
+            $filesForPdf = @()
+            $fileCounter = 0
+            $tempDirScPassthrough = Join-Path $tempDir "sc_passthrough" # 変換が必要な場合のみ作成
+
+            foreach ($file in $imageFiles) {
+                $extension = [System.IO.Path]::GetExtension($file.FullName).ToLower()
+                
+                if ($jpegExtensions -contains $extension) {
+                    # 元々JPEGなので、そのまま使用
+                    $filesForPdf += $file.FullName
+                    Write-Verbose "  -> $($file.Name): JPEGのため変換不要。"
+                } else {
+                    # JPEGではないので、変換
+                    if (-not (Test-Path $tempDirScPassthrough)) {
+                        New-Item -ItemType Directory -Path $tempDirScPassthrough | Out-Null
+                    }
+                    $newFileName = "{0:D4}.jpg" -f $fileCounter
+                    $passthroughPath = Join-Path $tempDirScPassthrough $newFileName
+                    
+                    Write-Verbose "  -> $($file.Name): 非JPEGのため変換。"
+                    & $magick_exe "$($file.FullName)" "$passthroughPath"
+
+                    if (-not (Test-Path $passthroughPath)) {
+                        Write-Warning "JPEGへの形式変換に失敗しました: $($file.FullName)"
+                    } else {
+                        $filesForPdf += $passthroughPath
+                    }
+                }
+                $fileCounter++
+            }
             $originalCount = $imageFiles.Count
             $convertedCount = 0
         }
