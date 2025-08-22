@@ -330,20 +330,25 @@ if ($ArchiveFilePaths.Count -eq 0) {
 # ==============================================================================
 
 # 0. 前提ツールのパス解決と存在チェック
+# 優先順位: 1. 引数で指定されたパス -> 2. スクリプトと同じフォルダ -> 3. 環境変数PATH (cmd.exe経由) -> 4. 環境変数PATH (PowerShell経由)
 $sevenzip_exe = $null
 if ($PSBoundParameters.ContainsKey('SevenZipPath') -and (Test-Path -LiteralPath $SevenZipPath -PathType Leaf)) {
     $sevenzip_exe = $SevenZipPath
 } else {
-    # スクリプトと同じディレクトリを検索 (OSに応じて.exeの有無を考慮)
-    $cmdName = '7z'
-    $localExePath = Join-Path $PSScriptRoot "$cmdName.exe"
-    $localCmdPath = Join-Path $PSScriptRoot $cmdName
+    $localExePath = Join-Path $PSScriptRoot "7z.exe"
     if (Test-Path -LiteralPath $localExePath -PathType Leaf) {
         $sevenzip_exe = $localExePath
-    } elseif (Test-Path -LiteralPath $localCmdPath -PathType Leaf) {
-        $sevenzip_exe = $localCmdPath
     } else {
-        $sevenzip_exe = (Get-Command $cmdName -ErrorAction SilentlyContinue).Source
+        $foundPath = (cmd.exe /c "where.exe 7z.exe" 2>$null).Split([System.Environment]::NewLine) | Select-Object -First 1
+        if ($foundPath) {
+            $trimmedPath = $foundPath.Trim()
+            if ($trimmedPath -and (Test-Path -LiteralPath $trimmedPath -PathType Leaf)) {
+                $sevenzip_exe = $trimmedPath
+            }
+        }
+        if (-not $sevenzip_exe) {
+            $sevenzip_exe = (Get-Command '7z' -ErrorAction SilentlyContinue).Source
+        }
     }
 }
 
@@ -351,16 +356,20 @@ $magick_exe = $null
 if ($PSBoundParameters.ContainsKey('MagickPath') -and (Test-Path -LiteralPath $MagickPath -PathType Leaf)) {
     $magick_exe = $MagickPath
 } else {
-    # スクリプトと同じディレクトリを検索 (OSに応じて.exeの有無を考慮)
-    $cmdName = 'magick'
-    $localExePath = Join-Path $PSScriptRoot "$cmdName.exe"
-    $localCmdPath = Join-Path $PSScriptRoot $cmdName
+    $localExePath = Join-Path $PSScriptRoot "magick.exe"
     if (Test-Path -LiteralPath $localExePath -PathType Leaf) {
         $magick_exe = $localExePath
-    } elseif (Test-Path -LiteralPath $localCmdPath -PathType Leaf) {
-        $magick_exe = $localCmdPath
     } else {
-        $magick_exe = (Get-Command $cmdName -ErrorAction SilentlyContinue).Source
+        $foundPath = (cmd.exe /c "where.exe magick.exe" 2>$null).Split([System.Environment]::NewLine) | Select-Object -First 1
+        if ($foundPath) {
+            $trimmedPath = $foundPath.Trim()
+            if ($trimmedPath -and (Test-Path -LiteralPath $trimmedPath -PathType Leaf)) {
+                $magick_exe = $trimmedPath
+            }
+        }
+        if (-not $magick_exe) {
+            $magick_exe = (Get-Command 'magick' -ErrorAction SilentlyContinue).Source
+        }
     }
 }
 
@@ -368,16 +377,20 @@ $pdfcpu_exe = $null
 if ($PSBoundParameters.ContainsKey('PdfCpuPath') -and (Test-Path -LiteralPath $PdfCpuPath -PathType Leaf)) {
     $pdfcpu_exe = $PdfCpuPath
 } else {
-    # スクリプトと同じディレクトリを検索 (OSに応じて.exeの有無を考慮)
-    $cmdName = 'pdfcpu'
-    $localExePath = Join-Path $PSScriptRoot "$cmdName.exe"
-    $localCmdPath = Join-Path $PSScriptRoot $cmdName
+    $localExePath = Join-Path $PSScriptRoot "pdfcpu.exe"
     if (Test-Path -LiteralPath $localExePath -PathType Leaf) {
         $pdfcpu_exe = $localExePath
-    } elseif (Test-Path -LiteralPath $localCmdPath -PathType Leaf) {
-        $pdfcpu_exe = $localCmdPath
     } else {
-        $pdfcpu_exe = (Get-Command $cmdName -ErrorAction SilentlyContinue).Source
+        $foundPath = (cmd.exe /c "where.exe pdfcpu.exe" 2>$null).Split([System.Environment]::NewLine) | Select-Object -First 1
+        if ($foundPath) {
+            $trimmedPath = $foundPath.Trim()
+            if ($trimmedPath -and (Test-Path -LiteralPath $trimmedPath -PathType Leaf)) {
+                $pdfcpu_exe = $trimmedPath
+            }
+        }
+        if (-not $pdfcpu_exe) {
+            $pdfcpu_exe = (Get-Command 'pdfcpu' -ErrorAction SilentlyContinue).Source
+        }
     }
 }
 
