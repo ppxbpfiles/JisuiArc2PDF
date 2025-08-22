@@ -140,14 +140,57 @@ param(
 
     [Parameter(Mandatory=$false)]
     [Alias('p')]
-    [ValidateSet('A3', 'A4', 'A5', 'B4', 'B5', 'B6')]
-    [string]$PaperSize
+    [ValidateSet('A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B0', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7')]
+    [string]$PaperSize,
+
+    [Parameter(Mandatory=$false)]
+    [Alias('mcr')]
+    [double]$MinCompressionRatio,
+
+    [Parameter(Mandatory=$false)]
+    [Alias('sc')]
+    [switch]$SkipCompression,
+
+    [Parameter(Mandatory=$false)]
+    [string]$LogPath
 )
 
 # ==============================================================================
 # ログファイルパス設定
 # ==============================================================================
-$logFilePath = Join-Path $PSScriptRoot "JisuiArc2PDF_log.txt"
+$logFilePath = ""
+if ($PSBoundParameters.ContainsKey('LogPath')) {
+    # Ensure the path is resolved to an absolute path
+    $resolvedLogPath = $LogPath
+    if (-not ([System.IO.Path]::IsPathRooted($resolvedLogPath))) {
+        $resolvedLogPath = Join-Path $PSScriptRoot $resolvedLogPath
+    }
+
+    # Check if the path points to a directory
+    if ((Test-Path -Path $resolvedLogPath -PathType Container) -or ($resolvedLogPath.EndsWith('\') -or $resolvedLogPath.EndsWith('/'))) {
+        # It's a directory, append the default filename
+        $logFilePath = Join-Path $resolvedLogPath "JisuiArc2PDF_log.txt"
+    } else {
+        # It's a full file path
+        $logFilePath = $resolvedLogPath
+    }
+} else {
+    # Default behavior
+    $logFilePath = Join-Path $PSScriptRoot "JisuiArc2PDF_log.txt"
+}
+
+# Ensure the directory for the log file exists before attempting to write to it
+try {
+    $logDirectory = Split-Path -Path $logFilePath -Parent -ErrorAction Stop
+    if (-not (Test-Path -Path $logDirectory)) {
+        New-Item -ItemType Directory -Path $logDirectory -Force -ErrorAction Stop | Out-Null
+    }
+} catch {
+    Write-Error "ログファイルのパスまたはディレクトリの作成に失敗しました: $logFilePath - $($_.Exception.Message)"
+    # Stop the script if we can't create the log path
+    exit 1
+}
+
 
 # ==============================================================================
 # 解像度設定の計算
@@ -166,12 +209,22 @@ elseif ($PSBoundParameters.ContainsKey('Dpi') -and $PSBoundParameters.ContainsKe
     $targetDpi = $Dpi
     $paperHeightMm = 0
     switch ($PaperSize) {
+        'A0' { $paperHeightMm = 1189 }
+        'A1' { $paperHeightMm = 841 }
+        'A2' { $paperHeightMm = 594 }
         'A3' { $paperHeightMm = 420 }
         'A4' { $paperHeightMm = 297 }
         'A5' { $paperHeightMm = 210 }
+        'A6' { $paperHeightMm = 148 }
+        'A7' { $paperHeightMm = 105 }
+        'B0' { $paperHeightMm = 1414 }
+        'B1' { $paperHeightMm = 1000 }
+        'B2' { $paperHeightMm = 707 }
+        'B3' { $paperHeightMm = 500 }
         'B4' { $paperHeightMm = 364 }
         'B5' { $paperHeightMm = 257 }
         'B6' { $paperHeightMm = 182 }
+        'B7' { $paperHeightMm = 128 }
     }
     $targetHeight = [math]::Round(($paperHeightMm / 25.4) * $targetDpi)
     Write-Host "[情報] 計算設定: $PaperSize ($paperHeightMm mm) @ ${targetDpi} dpi -> $targetHeight px"
@@ -270,9 +323,6 @@ if ($ArchiveFilePaths.Count -eq 0) {
 }
 # ==============================================================================
 
-
-
-
 # 0. 前提ツールのパス解決と存在チェック
 $sevenzip_exe = $null
 if ($PSBoundParameters.ContainsKey('SevenZipPath') -and (Test-Path -LiteralPath $SevenZipPath -PathType Leaf)) {
@@ -326,15 +376,15 @@ if ($PSBoundParameters.ContainsKey('PdfCpuPath') -and (Test-Path -LiteralPath $P
 }
 
 if (-not $magick_exe) {
-    Write-Error "ImageMagick (magick.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。";
+    Write-Error "ImageMagick (magick.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。"
     exit 1
 }
 if (-not $sevenzip_exe) {
-    Write-Error "7-Zip (7z.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。";
+    Write-Error "7-Zip (7z.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。"
     exit 1
 }
 if (-not $pdfcpu_exe) {
-    Write-Error "PDFCPU (pdfcpu.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。";
+    Write-Error "PDFCPU (pdfcpu.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。"
     exit 1
 }
 
@@ -365,6 +415,10 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
     Write-Verbose "変換用フォルダを作成しました: $tempDirConverted"
 
     try {
+        $logDetails = @()
+        $convertedCount = 0
+        $originalCount = 0
+
         # 3. アーカイブの拡張子に応じて展開
         Write-Host "アーカイブを展開しています: $($archiveFileInfo.Name)";
         # Call Operator (&) を使用して、特殊文字を含むファイルパスを正しく処理する
@@ -394,40 +448,118 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             throw "アーカイブ内に処理可能な画像ファイルが見つかりませんでした。";
         }
         
-        # 5. 画像を連番ファイル名で変換・保存
-        Write-Host "画像を変換し、一時ファイルに保存しています...";
-        $convertedImagePaths = @()
-        $fileCounter = 0
-        foreach ($file in $imageFiles) {
-            Write-Host "Processing $($file.Name)...";
-            
-            # 画像の平均彩度を計算
-            $SATURATION_STR = & $magick_exe "$($file.FullName)" -colorspace HSL -channel G -separate +channel -format "%[mean]" info:
-            $SATURATION = [double]$SATURATION_STR / 65535.0
+        # 5. 画像変換処理の決定と実行
+        $filesForPdf = @()
 
-            # 連番のファイル名を生成 (例: 0000.jpg)
-            $newFileName = "{0:D4}.jpg" -f $fileCounter
-            
-            if ($SATURATION -lt $SaturationThreshold) {
-                # グレースケール画像として処理
-                Write-Host "  -> Grayscale detected. Saving as $newFileName";
-                $destinationPath = Join-Path $tempDirConvertedGray $newFileName
-                & $magick_exe "$($file.FullName)" -resize "x$targetHeight" -density $targetDpi -quality $Quality -colorspace Gray "$destinationPath"
-            }
-            else {
-                # カラー画像として処理
-                Write-Host "  -> Color detected. Saving as $newFileName";
-                $destinationPath = Join-Path $tempDirConvertedColor $newFileName
-                & $magick_exe "$($file.FullName)" -resize "x$targetHeight" -density $targetDpi -quality $Quality "$destinationPath"
-            }
+        if ($SkipCompression.IsPresent) {
+            Write-Host "[情報] -SkipCompression が指定されたため、画像変換をスキップし、元のファイルを使用します。"
+            $filesForPdf = $imageFiles.FullName
+        }
+        else {
+            # --- 通常の画像変換処理 ---
+            Write-Host "画像を変換し、一時ファイルに保存しています...";
+            $fileCounter = 0
 
-            if (Test-Path $destinationPath) {
-                $convertedImagePaths += $destinationPath
-            }
-            $fileCounter++
+            foreach ($file in $imageFiles) {
+                Write-Host "Processing $($file.Name)...";
+                
+                # 画像の平均彩度を計算
+                $SATURATION_STR = & $magick_exe "$($file.FullName)" -colorspace HSL -channel G -separate +channel -format "%[mean]" info:
+                $SATURATION = [double]$SATURATION_STR / 65535.0
+
+                # 連番のファイル名を生成 (例: 0000.jpg)
+                $newFileName = "{0:D4}.jpg" -f $fileCounter
+
+                # 元画像の高さを取得
+                $originalHeight = 0
+                try {
+                    $originalHeightStr = & $magick_exe identify -format "%h" "$($file.FullName)"
+                    if ($originalHeightStr -match '^\d+$') {
+                        $originalHeight = [int]$originalHeightStr
+                    } else {
+                        Write-Warning "画像の高さの取得に失敗しました: $($file.Name)"
+                        continue
+                    }
+                } catch {
+                    Write-Warning "identifyの実行中にエラーが発生しました: $($file.Name) - $($_.Exception.Message)"
+                    continue
+                }
+
+                # magick.exe への引数リストを動的に構築
+                $magickArgs = @()
+                $magickArgs += "$($file.FullName)"
+
+                # $targetHeight が 0 より大きい (つまり、リサイズが有効な) 場合のみ、高さ比較とリサイズ処理を行う
+                if ($targetHeight -gt 0 -and $originalHeight -ge $targetHeight) {
+                    $magickArgs += "-resize", "x$targetHeight"
+                    Write-Host "  -> Resizing image from ${originalHeight}px to ${targetHeight}px."
+                } else {
+                    Write-Host "  -> Skipping resize for image (Height: ${originalHeight}px)."
+                }
+
+                $magickArgs += "-density", $targetDpi, "-quality", $Quality
+
+                # 彩度に応じて出力先と色空間設定を決定
+                $destinationPath = ""
+                if ($SATURATION -lt $SaturationThreshold) {
+                    Write-Host "  -> Grayscale detected. Saving as $newFileName";
+                    $destinationPath = Join-Path $tempDirConvertedGray $newFileName
+                    $magickArgs += "-colorspace", "Gray"
+                }
+                else {
+                    Write-Host "  -> Color detected. Saving as $newFileName";
+                    $destinationPath = Join-Path $tempDirConvertedColor $newFileName
+                }
+                $magickArgs += "$destinationPath"
+
+                # ImageMagick を実行
+                & $magick_exe @magickArgs
+                
+                if (-not (Test-Path $destinationPath)) {
+                    Write-Warning "変換後ファイルが見つかりません: $destinationPath。このページはスキップされます。"
+                    $fileCounter++
+                    continue # Skip to the next file
+                }
+
+                # --- Per-Image Compression Check ---
+                $useOriginal = $false
+                $logMessageDetail = ""
+
+                $originalSize = $file.Length
+                $convertedSize = (Get-Item -Path $destinationPath).Length
+
+                if ($originalSize -gt 0) {
+                    $actualRatio = ($convertedSize / $originalSize) * 100
+                    $actualRatioFormatted = "{0:N2}" -f $actualRatio
+                    $logMessageDetail = "(Ratio: $($actualRatioFormatted) %)"
+                }
+
+                # Decide whether to use the original image
+                if ($PSBoundParameters.ContainsKey('MinCompressionRatio')) {
+                    if ($actualRatio -ge $MinCompressionRatio) {
+                        $useOriginal = $true
+                    }
+                }
+
+                if ($useOriginal) {
+                    $filesForPdf += $file.FullName
+                    $originalCount++
+                    $logDetails += "    - $($file.Name): Original $logMessageDetail"
+                    Remove-Item -Path $destinationPath -Force
+                } else {
+                    $filesForPdf += $destinationPath
+                    $convertedCount++
+                    $logDetails += "    - $($file.Name): Converted $logMessageDetail"
+                }
+                
+                $fileCounter++
+            } # --- foreach loop end ---
         }
 
         # 6. PDFの作成 (PDFCPU を使用)
+        if ($filesForPdf.Count -eq 0) {
+            throw "PDFに変換する画像ファイルが見つかりませんでした。"
+        }
         $pdfName = $archiveFileInfo.BaseName + ".pdf"
         $tempPdfName = "temp_" + [System.Guid]::NewGuid().ToString() + ".pdf"
         
@@ -436,7 +568,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         Write-Host "PDFを作成しています: $pdfOutputPath";
 
         # PDFCPU で画像からPDFを作成
-        $importArgs = @('import', '--', $tempPdfOutputPath) + $convertedImagePaths
+        $importArgs = @('import', '--', $tempPdfOutputPath) + $filesForPdf
         $stderrPath = Join-Path $tempDir "pdfcpu_import_stderr.txt"
         $stdoutPath = Join-Path $tempDir "pdfcpu_import_stdout.txt"
         & $pdfcpu_exe @importArgs 2> $stderrPath 1> $stdoutPath
@@ -502,30 +634,38 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         try {
             $logTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             
-            # 基本のログメッセージを作成
+            # 実行コマンドラインの取得
+            $commandLine = $MyInvocation.Line
+
+            # Build the summary part
+            $imageSummary = "Images: $($imageFiles.Count) (Converted: $convertedCount, Originals: $originalCount)"
+
+            # Build the main log message
             $logParts = @(
                 "$logTimestamp",
                 "Source: $($archiveFileInfo.Name)"
             )
-
-            # PaperSizeが指定されていた場合、ログに追加
             if ($PSBoundParameters.ContainsKey('PaperSize')) {
                 $logParts += "PaperSize: $PaperSize"
             }
-
-            # 残りの設定を追加
+            if ($PSBoundParameters.ContainsKey('MinCompressionRatio')) {
+                $logParts += "MinCompressionRatio: $MinCompressionRatio"
+            }
             $logParts += @(
                 "Height: ${targetHeight}px",
                 "DPI: ${targetDpi}",
                 "Quality: ${Quality}",
                 "Saturation: ${SaturationThreshold}",
+                $imageSummary,
                 "Output: $pdfOutputPath"
             )
             
-            # 配列をカンマ区切りで結合
             $logMessage = $logParts -join ', '
 
-            Add-Content -Path $logFilePath -Value $logMessage
+            # Create a combined list for Add-Content
+            $fullLogContent = @("Command: $commandLine", $logMessage) + $logDetails
+
+            Add-Content -Path $logFilePath -Value $fullLogContent
             Write-Verbose "設定をログファイルに書き込みました: $logFilePath"
         } catch {
             Write-Warning "ログファイルへの書き込みに失敗しました: $($_.Exception.Message)"
