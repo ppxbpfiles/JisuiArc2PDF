@@ -949,7 +949,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             $settingsParts += "DPI:${targetDpi}"
             $settingsParts += "Quality:${Quality}"
             $settingsParts += "Saturation:${SaturationThreshold}"
-            $settingsString = $settingsParts -join ', 
+            $settingsString = $settingsParts -join ', '
 
             # Build the main log message in key=value format
             $logMessage = "Timestamp=`"$logTimestamp`" Status=`"$status`" Source=`"$($archiveFileInfo.Name)`" Output=`"$pdfOutputPath`" Images=$($imageFiles.Count) Converted=$convertedCount Originals=$originalCount Skipped=$skippedCount Settings=`"$settingsString`""
