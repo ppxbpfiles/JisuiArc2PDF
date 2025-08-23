@@ -6,6 +6,7 @@ import glob
 import subprocess
 import tempfile
 import re
+import datetime
 from pathlib import Path
 
 # --- Helper Functions ---
@@ -45,27 +46,28 @@ def natural_sort_key(s: str) -> list:
 def is_image(file_path: str, magick_exe: str) -> bool:
     """Check if a file is an image using magick identify."""
     try:
-        subprocess.run([magick_exe, "identify", file_path], check=True, capture_output=True, timeout=15)
+        subprocess.run([magick_exe, "identify", str(file_path)], check=True, capture_output=True, timeout=15)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
-def get_image_height(file_path: str, magick_exe: str) -> int:
+def get_image_height(file_path: str, magick_exe: str) -> int | None:
     try:
-        result = subprocess.run([magick_exe, "identify", "-format", "%h", file_path], check=True, capture_output=True, text=True)
+        result = subprocess.run([magick_exe, "identify", "-format", "%h", str(file_path)], check=True, capture_output=True, text=True)
         return int(result.stdout)
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-        return 0
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
+        print(f"Warning: Could not get height for {os.path.basename(file_path)}. Error: {e}", file=sys.stderr)
+        return None
 
 def get_image_saturation(file_path: str, magick_exe: str) -> float:
     try:
         result = subprocess.run(
-            [magick_exe, file_path, "-colorspace", "HSL", "-channel", "G", "-separate", "+channel", "-format", "%[mean]", "info:"],
+            [magick_exe, str(file_path), "-colorspace", "HSL", "-channel", "G", "-separate", "+channel", "-format", "%[mean]", "info:"],
             check=True, capture_output=True, text=True
         )
         return float(result.stdout) / 65535.0
     except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-        return 0.5
+        return 0.5 # Default to color if saturation check fails
 
 def calculate_target_height(args: argparse.Namespace) -> tuple[int, int]:
     """Calculate target height and DPI based on user arguments."""
@@ -92,20 +94,21 @@ def calculate_target_height(args: argparse.Namespace) -> tuple[int, int]:
     print(f"[Info] Using default: A4 @ {target_dpi}dpi -> {target_height}px")
     return target_height, target_dpi
 
-def process_archive(archive_path: str, args: argparse.Namespace, tools: dict):
+def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, log_file_path: Path | None):
     """Process a single archive file."""
     print("\n" + "=" * 40)
-    print(f"Processing: {os.path.basename(archive_path)}")
+    print(f"Processing: {os.path.basename(archive_path)})")
     print("=" * 40)
 
     temp_dir = Path(tempfile.mkdtemp(prefix="JisuiArc2PDF_"))
-    converted_dir = temp_dir / "converted"
-    converted_dir.mkdir()
-
-    if args.Verbose:
-        print(f"Created temporary directory: {temp_dir}")
-
+    
     try:
+        converted_dir = temp_dir / "converted"
+        converted_dir.mkdir()
+
+        if args.Verbose:
+            print(f"Created temporary directory: {temp_dir}")
+
         print("Extracting archive...")
         subprocess.run(
             [tools['sevenzip'], "e", archive_path, f"-o{temp_dir}", "-y"],
@@ -115,18 +118,20 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict):
         print("Finding and sorting image files...")
         image_files = []
         for root, _, files in os.walk(temp_dir):
-            if Path(root) == converted_dir:
+            # Do not search in our own conversion output directory
+            if Path(root).resolve() == converted_dir.resolve():
                 continue
             for file in files:
                 full_path = Path(root) / file
                 if is_image(str(full_path), tools['magick']):
                     image_files.append(full_path)
+                elif args.Verbose:
+                    print(f"  Skipping non-image file: {file}")
         
         image_files.sort(key=lambda f: natural_sort_key(f.name))
 
         if not image_files:
-            print("Error: No image files found in the archive.", file=sys.stderr)
-            return
+            raise ValueError("No image files found in the archive.")
 
         if args.Verbose:
             print(f"Found {len(image_files)} images.")
@@ -135,44 +140,75 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict):
 
         print("Converting images...")
         conversion_results = []
+        skipped_files = []
+
         for i, img_path in enumerate(image_files):
             print(f"  Processing {img_path.name}...")
-            original_size = img_path.stat().st_size
+            
+            original_height = get_image_height(str(img_path), tools['magick'])
+            if original_height is None:
+                skipped_files.append(img_path)
+                continue
+
             magick_cmd = [tools['magick'], str(img_path)]
             if args.Deskew: magick_cmd.extend(["-deskew", "40%"])
             if args.Trim: magick_cmd.extend(["-fuzz", args.Fuzz, "-trim", "+repage"])
-            img_height = get_image_height(str(img_path), tools['magick'])
-            if target_height > 0 and img_height > target_height: magick_cmd.extend(["-resize", f"x{target_height}"])
+            
+            if target_height > 0 and original_height > target_height: 
+                magick_cmd.extend(["-resize", f"x{target_height}"])
+
             magick_cmd.extend(["-density", str(target_dpi), "-quality", str(args.Quality)])
             
-            # Add contrast adjustments based on saturation
-            if get_image_saturation(str(img_path), tools['magick']) < args.SaturationThreshold:
+            saturation = get_image_saturation(str(img_path), tools['magick'])
+            if saturation < args.SaturationThreshold:
                 magick_cmd.extend(["-colorspace", "Gray"])
                 if args.GrayscaleLevel:
                     magick_cmd.extend(["-level", args.GrayscaleLevel])
             else:
-                if args.ColorContrast:
+                if args.AutoContrast:
+                    magick_cmd.append("-normalize")
+                elif args.ColorContrast:
                     magick_cmd.extend(["-brightness-contrast", args.ColorContrast])
+
             converted_path = converted_dir / f"{i:04d}.jpg"
             magick_cmd.append(str(converted_path))
-            subprocess.run(magick_cmd, check=True, capture_output=True)
-            conversion_results.append({
-                "original_path": img_path, "converted_path": converted_path,
-                "original_size": original_size, "converted_size": converted_path.stat().st_size if converted_path.exists() else 0
-            })
+            
+            try:
+                subprocess.run(magick_cmd, check=True, capture_output=True)
+                if not converted_path.exists():
+                    raise FileNotFoundError("Magick command succeeded but output file not found.")
+                
+                conversion_results.append({
+                    "original_path": img_path,
+                    "converted_path": converted_path,
+                    "original_size": img_path.stat().st_size,
+                    "converted_size": converted_path.stat().st_size,
+                    "saturation": saturation
+                })
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                print(f"Warning: Failed to convert {img_path.name}. It will be skipped. Error: {e}", file=sys.stderr)
+                skipped_files.append(img_path)
+
+        if not conversion_results:
+            raise ValueError("All image files failed to convert.")
 
         total_original_size = sum(r['original_size'] for r in conversion_results)
         total_converted_size = sum(r['converted_size'] for r in conversion_results)
         use_converted = total_converted_size < total_original_size
+        
         if args.TotalCompressionThreshold is not None and total_original_size > 0:
             ratio = (total_converted_size / total_original_size) * 100
             print(f"[Info] Compression ratio: {ratio:.2f}% (Threshold: {args.TotalCompressionThreshold}%)")
             use_converted = ratio < args.TotalCompressionThreshold
 
         files_for_pdf = []
+        converted_count = 0
+        original_count = 0
+
         if use_converted:
             print("[Info] Using converted (smaller) image set.")
             files_for_pdf = [str(r['converted_path']) for r in conversion_results]
+            converted_count = len(files_for_pdf)
         else:
             print("[Info] Using original image set (re-encoded as JPEG).")
             passthrough_dir = temp_dir / "passthrough"
@@ -183,8 +219,7 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict):
                 if args.Deskew: magick_cmd.extend(["-deskew", "40%"])
                 if args.Trim: magick_cmd.extend(["-fuzz", args.Fuzz, "-trim", "+repage"])
                 
-                # Add contrast adjustments based on saturation for passthrough
-                if get_image_saturation(str(r['original_path']), tools['magick']) < args.SaturationThreshold:
+                if r['saturation'] < args.SaturationThreshold:
                     magick_cmd.extend(["-colorspace", "Gray"])
                     if args.GrayscaleLevel:
                         magick_cmd.extend(["-level", args.GrayscaleLevel])
@@ -193,37 +228,120 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict):
                         magick_cmd.append("-normalize")
                     elif args.ColorContrast:
                         magick_cmd.extend(["-brightness-contrast", args.ColorContrast])
+
                 magick_cmd.extend(["-quality", str(args.Quality), str(passthrough_path)])
-                subprocess.run(magick_cmd, check=True, capture_output=True)
-                files_for_pdf.append(str(passthrough_path))
+                try:
+                    subprocess.run(magick_cmd, check=True, capture_output=True)
+                    files_for_pdf.append(str(passthrough_path))
+                except subprocess.CalledProcessError as e:
+                    print(f"Warning: Failed to passthrough convert {r['original_path'].name}. It will be skipped. Error: {e}", file=sys.stderr)
+                    skipped_files.append(r['original_path']) # Also track skips here
+            
+            original_count = len(files_for_pdf)
+
+        if not files_for_pdf:
+            raise ValueError("No image files were successfully prepared for the PDF.")
 
         print("Creating PDF...")
         archive_name = Path(archive_path).stem
         output_pdf_path = Path(archive_path).parent / f"{archive_name}.pdf"
         temp_pdf_path = temp_dir / "temp.pdf"
+        
         subprocess.run([tools['pdfcpu'], "import", str(temp_pdf_path)] + files_for_pdf, check=True, capture_output=True)
+        
         print("Optimizing PDF...")
         subprocess.run([tools['pdfcpu'], "optimize", str(temp_pdf_path)], check=True, capture_output=True)
+        
         final_pdf_path = temp_pdf_path
-        if args.Linearize and tools['qpdf']:
+        if args.Linearize and tools.get('qpdf'):
             print("Linearizing PDF with QPDF...")
             linearized_pdf_path = temp_dir / "linearized.pdf"
             subprocess.run([tools['qpdf'], "--linearize", str(temp_pdf_path), str(linearized_pdf_path)], check=True, capture_output=True)
             final_pdf_path = linearized_pdf_path
         elif args.Linearize:
              print("Warning: --Linearize specified but QPDF not found. Skipping.", file=sys.stderr)
+        
         shutil.move(str(final_pdf_path), str(output_pdf_path))
+        
         source_stat = Path(archive_path).stat()
         os.utime(output_pdf_path, (source_stat.st_atime, source_stat.st_mtime))
+        
         print(f"\nSuccess! PDF created at: {output_pdf_path}")
 
-    except FileNotFoundError as e:
-        print(f"Error: A tool was not found: {e}", file=sys.stderr)
-    except subprocess.CalledProcessError as e:
-        print(f"Error during subprocess execution for: {' '.join(e.cmd)}", file=sys.stderr)
-        print(f"Stderr: {e.stderr.decode(errors='ignore')}", file=sys.stderr)
+        # --- Logging ---
+        if log_file_path:
+            try:
+                log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                command_line = f"python {' '.join(sys.argv)}"
+                skipped_count = len(skipped_files)
+                status = "Success with pages skipped" if skipped_count > 0 else "Success"
+
+                settings_parts = []
+                if args.PaperSize: settings_parts.append(f"PaperSize:{args.PaperSize}")
+                if args.TotalCompressionThreshold is not None: settings_parts.append(f"TCR:{args.TotalCompressionThreshold}")
+                if args.Trim: settings_parts.append(f"Trim:True"); settings_parts.append(f"Fuzz:{args.Fuzz}")
+                if args.Deskew: settings_parts.append(f"Deskew:True")
+                if args.AutoContrast: settings_parts.append(f"AutoContrast:True")
+                elif args.ColorContrast: settings_parts.append(f"ColorContrast:{args.ColorContrast}")
+                if args.GrayscaleLevel: settings_parts.append(f"GrayscaleLevel:{args.GrayscaleLevel}")
+                if args.Linearize: settings_parts.append(f"Linearize:True")
+                settings_parts.append(f"Height:{target_height}px")
+                settings_parts.append(f"DPI:{target_dpi}")
+                settings_parts.append(f"Quality:{args.Quality}")
+                settings_parts.append(f"Saturation:{args.SaturationThreshold}")
+                settings_string = ", ".join(settings_parts)
+
+                log_message = (
+                    f'Timestamp="{log_timestamp}" '
+                    f'Status="{status}" '
+                    f'Source="{os.path.basename(archive_path)}" '
+                    f'Output="{output_pdf_path}" '
+                    f'Images={len(image_files)} '
+                    f'Converted={converted_count} '
+                    f'Originals={original_count} '
+                    f'Skipped={skipped_count} '
+                    f'Settings="{settings_string}"'
+                )
+
+                log_details = []
+                # Sort results by original filename for consistent log output
+                sorted_results = sorted(conversion_results, key=lambda x: natural_sort_key(x['original_path'].name))
+                for res in sorted_results:
+                    ratio = (res['converted_size'] / res['original_size'] * 100) if res['original_size'] > 0 else 0
+                    # Determine status for the detail line
+                    res_status = ""
+                    if use_converted:
+                        # Check if this specific file was part of the successful PDF creation
+                        if str(res['converted_path']) in files_for_pdf:
+                            res_status = "Converted"
+                        else: # Should not happen if logic is correct, but as a fallback
+                            res_status = "Original_Unused"
+                    else:
+                        # In passthrough mode, we need to check if the original path made it
+                        # This requires finding the corresponding passthrough file name.
+                        # A simpler check is just to assume all in conversion_results were processed if not use_converted
+                        res_status = "Original"
+
+                    log_details.append(f"    - {res['original_path'].name}: {res_status} (Ratio: {ratio:.2f} %)")
+                
+                for skipped_file in skipped_files:
+                    log_details.append(f"    - {skipped_file.name}: SKIPPED (File conversion failed)")
+
+                # Sort details to ensure consistent order
+                log_details.sort()
+
+                full_log_content = [f"Command: {command_line}", log_message] + log_details
+                with open(log_file_path, "a", encoding="utf-8") as f:
+                    f.write("\n".join(full_log_content) + "\n\n")
+
+                if args.Verbose:
+                    print(f"Wrote settings to log file: {log_file_path}")
+
+            except Exception as e:
+                print(f"Warning: Failed to write to log file: {e}", file=sys.stderr)
+
     except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
+        print(f"Error processing {os.path.basename(archive_path)}: {e}", file=sys.stderr)
     finally:
         if args.Verbose:
             print(f"Cleaning up temporary directory: {temp_dir}")
@@ -266,6 +384,30 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Handle Log Path
+    log_file_path = None
+    if args.LogPath:
+        log_path = Path(args.LogPath).resolve()
+        if log_path.is_dir():
+            log_file_path = log_path / "JisuiArc2PDF_py_log.txt"
+        else:
+            log_file_path = log_path
+    else:
+        try:
+            # If running as a script, place log in script's dir
+            script_dir = Path(os.path.dirname(os.path.realpath(__file__)))
+            log_file_path = script_dir / "JisuiArc2PDF_py_log.txt"
+        except NameError:
+            # If running interactively, place in current dir
+            log_file_path = Path.cwd() / "JisuiArc2PDF_py_log.txt"
+
+    if log_file_path:
+        try:
+            log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"Error: Could not create log directory for {log_file_path}. {e}", file=sys.stderr)
+            log_file_path = None # Disable logging if dir creation fails
+
     if args.Verbose:
         print("--- Tool Paths ---")
         for tool, path in tools.items():
@@ -276,12 +418,15 @@ def main():
     resolved_files = []
     for pattern in args.archive_file_paths:
         try:
+            # Use glob to expand wildcards
             expanded = glob.glob(pattern, recursive=True)
             if expanded:
                 resolved_files.extend(expanded)
+            # If glob doesn't find anything, it might be a literal path
             elif os.path.exists(pattern):
                 resolved_files.append(pattern)
         except Exception:
+            # Fallback for weird paths
             if os.path.exists(pattern):
                  resolved_files.append(pattern)
             else:
@@ -300,7 +445,7 @@ def main():
 ")
 
     for archive_path in unique_files:
-        process_archive(archive_path, args, tools)
+        process_archive(archive_path, args, tools, log_file_path)
 
     print("\n" + "=" * 40)
     print("All processing complete.")

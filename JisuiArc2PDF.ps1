@@ -175,7 +175,7 @@ param(
     [Alias('gl')]
     [string]$GrayscaleLevel,
 
-        [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory=$false)]
     [Alias('cc')]
     [string]$ColorContrast,
 
@@ -559,6 +559,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             Write-Host "画像を変換し、一時ファイルに保存しています..."
             $fileCounter = 0
             $conversionResults = @() # Holds results for each file
+            $skippedFiles = @() # Holds skipped files
 
             foreach ($file in $imageFiles) {
                 Write-Host "ファイル処理中: $($file.Name)"
@@ -578,10 +579,14 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                         $originalHeight = [int]$originalHeightStr
                     } else {
                         Write-Warning "画像の高さの取得に失敗しました: $($file.Name)"
+                        $skippedFiles += $file
+                        $fileCounter++
                         continue
                     }
                 } catch {
                     Write-Warning "identifyの実行中にエラーが発生しました: $($file.Name) - $($_.Exception.Message)"
+                    $skippedFiles += $file
+                    $fileCounter++
                     continue
                 }
 
@@ -649,6 +654,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 
                 if (-not (Test-Path $destinationPath)) {
                     Write-Warning "変換後ファイルが見つかりません: $destinationPath。このページはスキップされます。"
+                    $skippedFiles += $file
                     $fileCounter++
                     continue # Skip to the next file
                 }
@@ -669,6 +675,9 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 $fileCounter++
             } # --- foreach loop end ---
 
+            if ($conversionResults.Count -eq 0 -and $skippedFiles.Count -gt 0) {
+                 throw "全ての画像ファイルの変換に失敗しました。"
+            }
             if ($conversionResults.Count -eq 0) {
                 throw "処理可能な画像ファイルが変換されませんでした。"
             }
@@ -787,6 +796,10 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                     # We are using originals, but we log the conversion stats anyway
                     $logDetails += "    - $($result.FileName): Original $logMessageDetail"
                 }
+            }
+            # Add skipped files to log
+            foreach ($file in $skippedFiles) {
+                $logDetails += "    - $($file.Name): SKIPPED (File conversion failed)"
             }
         }
 
@@ -920,48 +933,26 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             }
 
             # Build the summary part
-            $imageSummary = "Images: $($imageFiles.Count) (Converted: $convertedCount, Originals: $originalCount)"
+            $skippedCount = if($skippedFiles) { $skippedFiles.Count } else { 0 }
+            $status = if ($skippedCount -gt 0) { "Success with pages skipped" } else { "Success" }
 
-            # Build the main log message
-            $logParts = @(
-                "$logTimestamp",
-                "Source: $($archiveFileInfo.Name)"
-            )
-            if ($PSBoundParameters.ContainsKey('PaperSize')) {
-                $logParts += "PaperSize: $PaperSize"
-            }
-            if ($PSBoundParameters.ContainsKey('TotalCompressionThreshold')) {
-                $logParts += "TotalCompressionThreshold: $TotalCompressionThreshold"
-            }
-            if ($Trim.IsPresent) {
-                $logParts += "Trim: $true"
-                $logParts += "Fuzz: $Fuzz"
-            }
-            if ($Deskew.IsPresent) {
-                $logParts += "Deskew: $true"
-            }
-            if ($Linearize.IsPresent) {
-                $logParts += "Linearize: $true"
-            }
-            if ($AutoContrast.IsPresent) {
-                $logParts += "AutoContrast: $true"
-            }
-            elseif ($PSBoundParameters.ContainsKey('ColorContrast')) {
-                $logParts += "ColorContrast: $ColorContrast"
-            }
-            if ($PSBoundParameters.ContainsKey('GrayscaleLevel')) {
-                $logParts += "GrayscaleLevel: $GrayscaleLevel"
-            }
-            $logParts += @(
-                "Height: ${targetHeight}px",
-                "DPI: ${targetDpi}",
-                "Quality: ${Quality}",
-                "Saturation: ${SaturationThreshold}",
-                $imageSummary,
-                "Output: $pdfOutputPath"
-            )
-            
-            $logMessage = $logParts -join ', '
+            $settingsParts = @()
+            if ($PSBoundParameters.ContainsKey('PaperSize')) { $settingsParts += "PaperSize:$($PaperSize)" }
+            if ($PSBoundParameters.ContainsKey('TotalCompressionThreshold')) { $settingsParts += "TCR:$($TotalCompressionThreshold)" }
+            if ($Trim.IsPresent) { $settingsParts += "Trim:$($Trim.IsPresent)"; $settingsParts += "Fuzz:$($Fuzz)" }
+            if ($Deskew.IsPresent) { $settingsParts += "Deskew:$($Deskew.IsPresent)" }
+            if ($AutoContrast.IsPresent) { $settingsParts += "AutoContrast:True" }
+            elseif ($PSBoundParameters.ContainsKey('ColorContrast')) { $settingsParts += "ColorContrast:$($ColorContrast)" }
+            if ($PSBoundParameters.ContainsKey('GrayscaleLevel')) { $settingsParts += "GrayscaleLevel:$($GrayscaleLevel)" }
+            if ($Linearize.IsPresent) { $settingsParts += "Linearize:True" }
+            $settingsParts += "Height:${targetHeight}px"
+            $settingsParts += "DPI:${targetDpi}"
+            $settingsParts += "Quality:${Quality}"
+            $settingsParts += "Saturation:${SaturationThreshold}"
+            $settingsString = $settingsParts -join ', 
+
+            # Build the main log message in key=value format
+            $logMessage = "Timestamp=`"$logTimestamp`" Status=`"$status`" Source=`"$($archiveFileInfo.Name)`" Output=`"$pdfOutputPath`" Images=$($imageFiles.Count) Converted=$convertedCount Originals=$originalCount Skipped=$skippedCount Settings=`"$settingsString`""
 
             # Create a combined list for Add-Content
             $fullLogContent = @("Command: $commandLine", $logMessage) + $logDetails

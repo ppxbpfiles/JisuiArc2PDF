@@ -371,7 +371,6 @@ JisuiArc2PDF.bat "*.zip" -LogPath "D:\My Project\processing_log.txt"
 
 ## ログ機能
 
-
 スクリプトは、PDF変換が成功するたびに、実行日時、使用した設定、および各ページの処理内訳をログファイルに自動で記録します。
 
 -   **ログファイル名**: `JisuiArc2PDF_log.txt`
@@ -382,44 +381,48 @@ JisuiArc2PDF.bat "*.zip" -LogPath "D:\My Project\processing_log.txt"
 
 ログは、**実行コマンドライン**、**サマリー行**、そしてそれに続く**詳細行**で構成されます。
 
-#### 実行コマンドライン
-ログの最初に、スクリプトを実行した際のコマンドラインがそのまま記録されます。これにより、後からコマンドをコピー＆ペーストして、まったく同じ設定で再実行することが容易になります。
-- `Command: (実行したコマンドライン)`
+- **実行コマンドライン**: スクリプトを実行した際のコマンドラインがそのまま記録されます。各ログブロックの先頭にあります。
+  - `Command: pwsh -File .\JisuiArc2PDF.ps1 ...`
 
-#### サマリー行
-次に、処理全体に関する情報が1行にまとめてカンマ区切りで記録されます。
+- **サマリー行**: `キー="値"` 形式で、処理結果の要約が1行で記録されます。
+  - `Timestamp`: 処理が完了した日時
+  - `Status`: 処理結果 (`Success` または `Success with pages skipped`)
+  - `Source`: 元の書庫ファイル名
+  - `Output`: 作成されたPDFのフルパス
+  - `Images`: 書庫内で認識された画像の総数
+  - `Converted`: 変換が適用された画像の数
+  - `Originals`: 元の画像が使われた数
+  - `Skipped`: 処理に失敗し、PDFから除外された画像の数
+  - `Settings`: 実行時に使用された主要な設定のリスト
 
-1.  **処理日時**: `yyyy-MM-dd HH:mm:ss` 形式のタイムスタンプ
-2.  **入力ファイル**: `Source: (元の書庫ファイル名)`
-3.  **用紙サイズ** (指定した場合のみ): `PaperSize: (指定したサイズ)`
-4.  **圧縮率しきい値** (指定した場合のみ): `TotalCompressionThreshold: (しきい値)`
-5.  **高さ**: `Height: (ピクセル数)px`
-6.  **DPI**: `DPI: (DPI値)`
-7.  **品質**: `Quality: (品質値)`
-8.  **彩度しきい値**: `Saturation: (しきい値)`
-9.  **画像サマリー**: `Images: (総数) (Converted: (変換数), Originals: (元画像数))`
-10. **出力ファイル**: `Output: (作成されたPDFのフルパス)`
-
-#### 詳細行
-サマリー行の直後には、インデント（字下げ）された詳細行が続きます。ここには、画像1枚ごとの処理結果が記録されます。
-
--   `    - (元画像ファイル名): Converted (Ratio: XX.XX %)`
-    -   画像が設定通りに変換されたことを示します。カッコ内に、元画像に対する変換後画像のサイズ比率が表示されます。
--   `    - (元画像ファイル名): Original (Ratio: XX.XX %)`
-    -   ファイルサイズ比較の結果、元画像がそのまま使用されたことを示します。カッコ内にも同様にサイズ比率が表示されます。
+- **詳細行**: インデントされた詳細行には、画像1枚ごとの処理結果が記録されます。
+  - `    - (ファイル名): Converted ...`: 画像が設定通りに変換されたことを示します。
+  - `    - (ファイル名): Original ...`: ファイルサイズ比較の結果、元画像が使用されたことを示します。
+  - `    - (ファイル名): SKIPPED ...`: ファイルの変換に失敗し、このページがPDFから**除外された**ことを示します。
 
 ### ログの例
+
 ```text
-Command: pwsh -File .\JisuiArc2PDF.ps1 MyBook.zip -tcr 95
-2025-08-22 18:30:00, Source: MyBook.zip, PaperSize: A4, TotalCompressionThreshold: 95, Height: 1683px, DPI: 144, Quality: 85, Saturation: 0.05, Images: 152 (Converted: 148, Originals: 4), Output: C:\Path\To\MyBook.pdf
+Command: pwsh -File .\JisuiArc2PDF.ps1 .\MyBook.zip -tcr 95
+Timestamp="2025-08-23 19:00:00" Status="Success with pages skipped" Source="MyBook.zip" Output="C:\Path\To\MyBook.pdf" Images=152 Converted=148 Originals=0 Skipped=4 Settings="TCR:95, Height:1683px, DPI:144, Quality:85, ..."
     - 001.jpg: Converted (Ratio: 55.12 %)
     - 002.jpg: Converted (Ratio: 61.40 %)
-    ...
-    - 085.jpg: Original (Ratio: 96.85 %)
-    - 086.jpg: Converted (Ratio: 58.91 %)
+    - 003.jpg: SKIPPED (File conversion failed)
     ...
 ```
-このログにより、どの設定でPDFが作成され、どちらの画像セット（変換後か元か）が使われたかを正確に把握することができます。
+
+### ログから処理結果を判断する方法
+
+ログファイルに**処理した書庫ファイルに関する記録が残っているかどうか**で、そのファイルの処理が成功したか失敗したかを判断できます。
+
+-   **ページ抜け（一部失敗）の確認**: サマリー行の `Skipped=` の数が`0`より大きい場合、そのPDFには**ページ抜けが発生しています。** 詳細行で `SKIPPED` となっているファイルを確認できます。
+-   **完全な失敗の確認**: 処理中にスクリプトが異常終了した場合、そのファイルに関するログは**一切書き込まれません。**
+
+| 状態 | ログのサマリー行 |
+| :--- | :--- |
+| **完全な成功** | `Status="Success"` かつ `Skipped=0` |
+| **ページ抜け** | `Status="Success with pages skipped"` かつ `Skipped`が1以上 |
+| **完全な失敗** | 対象ファイルのログブロック自体が**存在しない** |
 
 ## Paper Plane xUIから実行
 
