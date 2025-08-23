@@ -244,7 +244,6 @@ pwsh -File .\JisuiArc2PDF.ps1 "MyBook.zip" -Quality 92 -TotalCompressionThreshol
 
 **使用例:**
 ```powershell
-
 # 詳細メッセージを表示しながら処理
 pwsh -File .\JisuiArc2PDF.ps1 *.zip -Verbose
 ```
@@ -258,7 +257,6 @@ PowerShellターミナルを開き、`JisuiArc2PDF.ps1` スクリプトに処理
 ### ワイルドカードを使用
 `*` などのワイルドカードを使用して、特定のパターンのファイルを一括で処理できます。
 ```powershell
-
 # 現在のフォルダにあるすべてのZIPファイルを処理
 pwsh -File .\JisuiArc2PDF.ps1 *.zip
 
@@ -278,10 +276,6 @@ pwsh -File .\JisuiArc2PDF.ps1 "..\OtherFolder\*.rar"
 画質を維持しつつ、可能な限りの補正と圧縮をバランス良く行う、最も標準的で推奨される設定です。
 
 ```powershell
-
-# エイリアスを使い、複数の設定を組み合わせて実行する例
-```powershell
-```powershell
 pwsh -File .\JisuiArc2PDF.ps1 "C:\Scans\*.zip" -p B5 -d 300 -q 92 -gl '10%,90%' -ac -ds -tcr 95 -v
 ```
 
@@ -300,8 +294,6 @@ pwsh -File .\JisuiArc2PDF.ps1 "C:\Scans\*.zip" -p B5 -d 300 -q 92 -gl '10%,90%' 
 解像度とJPEG品質を高く設定し、ファイルサイズよりも画質を最優先します。カラーイラストや写真が多い書籍に適しています。
 
 ```powershell
-
-```powershell
 pwsh -File .\JisuiArc2PDF.ps1 "C:\Artbooks\*.rar" -h 2400 -q 98 -ac -ds -tcr 99
 ```
 -   **解像度**: `-h 2400` → 高さを2400pxに固定します。
@@ -316,15 +308,12 @@ pwsh -File .\JisuiArc2PDF.ps1 "C:\Artbooks\*.rar" -h 2400 -q 98 -ac -ds -tcr 99
 漫画の単行本（B6サイズなど）に多い設定です。解像度を少し抑え、紙焼け補正を少し強めに設定することで、読みやすさとファイルサイズのバランスを取ります。
 
 ```powershell
-
-```powershell
 pwsh -File .\JisuiArc2PDF.ps1 "D:\Manga\*.zip" -p B6 -d 200 -q 88 -gl '15%,85%' -ac -ds
 ```
 -   **解像度**: `-p B6 -d 200` → B6サイズ、200 DPIに設定。一般的なディスプレイで読むには十分な解像度です。
 -   **画質**: `-q 88` → 標準的な品質設定です。
 -   **コントラスト**: `-gl '15%,85%' -ac` → 白黒ページの紙焼け補正を少し強めにかけ、古い漫画の黄ばみを目立たなくします。カラーページは自動調整します。
 -   **傾き補正**: `-ds` → 傾きを補正します。
-```
 
 ## バッチファイルによる対話的な実行 (JisuiArc2PDF.bat)
 
@@ -420,7 +409,7 @@ JisuiArc2PDF.bat "*.zip" -LogPath "D:\My Project\processing_log.txt"
     -   ファイルサイズ比較の結果、元画像がそのまま使用されたことを示します。カッコ内にも同様にサイズ比率が表示されます。
 
 ### ログの例
-```
+```text
 Command: pwsh -File .\JisuiArc2PDF.ps1 MyBook.zip -tcr 95
 2025-08-22 18:30:00, Source: MyBook.zip, PaperSize: A4, TotalCompressionThreshold: 95, Height: 1683px, DPI: 144, Quality: 85, Saturation: 0.05, Images: 152 (Converted: 148, Originals: 4), Output: C:\Path\To\MyBook.pdf
     - 001.jpg: Converted (Ratio: 55.12 %)
@@ -439,7 +428,7 @@ Command: pwsh -File .\JisuiArc2PDF.ps1 MyBook.zip -tcr 95
 マークしたファイルに対して個別に処理できます。
 
 ```javascript
- %Os pwsh JisuiArc2PDF.ps1 %FC %:*trimmark
+%Os pwsh JisuiArc2PDF.ps1 %FC %:*trimmark
 ```
 
 ## 作成経緯について

@@ -114,7 +114,6 @@ python3 JisuiArc2PDF.py "/path/to/collections/*.rar"
 
 **使用例:**
 ```bash
-
 # 高さを2000pxに直接指定
 python3 JisuiArc2PDF.py *.zip -h 2000
 
@@ -145,7 +144,7 @@ python3 JisuiArc2PDF.py *.zip -p B5 -d 300
 画質を維持しつつ、可能な限りの補正と圧縮をバランス良く行う、最も標準的で推奨される設定です。
 
 ```bash
-python3JisuiArc2PDF.py "C:\Scans\*.zip" -p B5 -d 300 -q 92 --GrayscaleLevel "10%,90%" -ac --Deskew --Trim -tcr 95 -v
+python3 JisuiArc2PDF.py "C:\Scans\*.zip" -p B5 -d 300 -q 92 --GrayscaleLevel "10%,90%" -ac --Deskew --Trim -tcr 95 -v
 ```
 
 このコマンドは、以下の処理を実行します。
@@ -163,7 +162,7 @@ python3JisuiArc2PDF.py "C:\Scans\*.zip" -p B5 -d 300 -q 92 --GrayscaleLevel "10%
 解像度とJPEG品質を高く設定し、ファイルサイズよりも画質を最優先します。カラーイラストや写真が多い書籍に適しています。
 
 ```bash
-python3JisuiArc2PDF.py "/path/to/Artbooks/*.rar" -h 2400 -q 98 -ac -ds --TotalCompressionThreshold 99
+python3 JisuiArc2PDF.py "/path/to/Artbooks/*.rar" -h 2400 -q 98 -ac -ds --TotalCompressionThreshold 99
 ```
 -   **解像度**: `-h 2400` → 高さを2400pxに固定します。
 -   **画質**: `-q 98` → JPEG品質を `98` に設定し、圧縮ノイズを最小限に抑えます。
@@ -177,7 +176,7 @@ python3JisuiArc2PDF.py "/path/to/Artbooks/*.rar" -h 2400 -q 98 -ac -ds --TotalCo
 漫画の単行本（B6サイズなど）に多い設定です。解像度を少し抑え、紙焼け補正を少し強めに設定することで、読みやすさとファイルサイズのバランスを取ります。
 
 ```bash
-python3JisuiArc2PDF.py "./Manga/*.zip" -p B6 -d 200 -q 88 -gl "15%,85%" -ac -ds
+python3 JisuiArc2PDF.py "./Manga/*.zip" -p B6 -d 200 -q 88 -gl "15%,85%" -ac -ds
 ```
 -   **解像度**: `-p B6 -d 200` → B6サイズ、200 DPIに設定。一般的なディスプレイで読むには十分な解像度です。
 -   **画質**: `-q 88` → 標準的な品質設定です。
