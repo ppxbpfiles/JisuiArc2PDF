@@ -144,7 +144,15 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict):
             img_height = get_image_height(str(img_path), tools['magick'])
             if target_height > 0 and img_height > target_height: magick_cmd.extend(["-resize", f"x{target_height}"])
             magick_cmd.extend(["-density", str(target_dpi), "-quality", str(args.Quality)])
-            if get_image_saturation(str(img_path), tools['magick']) < args.SaturationThreshold: magick_cmd.extend(["-colorspace", "Gray"])
+            
+            # Add contrast adjustments based on saturation
+            if get_image_saturation(str(img_path), tools['magick']) < args.SaturationThreshold:
+                magick_cmd.extend(["-colorspace", "Gray"])
+                if args.GrayscaleLevel:
+                    magick_cmd.extend(["-level", args.GrayscaleLevel])
+            else:
+                if args.ColorContrast:
+                    magick_cmd.extend(["-brightness-contrast", args.ColorContrast])
             converted_path = converted_dir / f"{i:04d}.jpg"
             magick_cmd.append(str(converted_path))
             subprocess.run(magick_cmd, check=True, capture_output=True)
@@ -174,7 +182,17 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict):
                 magick_cmd = [tools['magick'], str(r['original_path'])]
                 if args.Deskew: magick_cmd.extend(["-deskew", "40%"])
                 if args.Trim: magick_cmd.extend(["-fuzz", args.Fuzz, "-trim", "+repage"])
-                if get_image_saturation(str(r['original_path']), tools['magick']) < args.SaturationThreshold: magick_cmd.extend(["-colorspace", "Gray"])
+                
+                # Add contrast adjustments based on saturation for passthrough
+                if get_image_saturation(str(r['original_path']), tools['magick']) < args.SaturationThreshold:
+                    magick_cmd.extend(["-colorspace", "Gray"])
+                    if args.GrayscaleLevel:
+                        magick_cmd.extend(["-level", args.GrayscaleLevel])
+                else:
+                    if args.AutoContrast:
+                        magick_cmd.append("-normalize")
+                    elif args.ColorContrast:
+                        magick_cmd.extend(["-brightness-contrast", args.ColorContrast])
                 magick_cmd.extend(["-quality", str(args.Quality), str(passthrough_path)])
                 subprocess.run(magick_cmd, check=True, capture_output=True)
                 files_for_pdf.append(str(passthrough_path))
@@ -225,9 +243,12 @@ def main():
     parser.add_argument("-d", "--Dpi", type=int, help="Image DPI.")
     parser.add_argument("-p", "--PaperSize", choices=['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B0', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7'], help="Paper size for height calculation.")
     parser.add_argument("-sc", "--SkipCompression", action="store_true", help="Skip optimizations.")
-    parser.add_argument("--Trim", action="store_true", help="Trim margins.")
+    parser.add_argument("-t", "--Trim", action="store_true", help="Trim margins.")
     parser.add_argument("--Fuzz", default="1%", help="Fuzz factor for --Trim. Default: 1%%") 
     parser.add_argument("-ds", "--Deskew", action="store_true", help="Deskew images.")
+    parser.add_argument("-gl", "--GrayscaleLevel", help="Level for grayscale contrast (e.g., '10%%,90%%').")
+    parser.add_argument("-cc", "--ColorContrast", help="Value for color contrast (e.g., '0x25').")
+    parser.add_argument("-ac", "--AutoContrast", action="store_true", help="Auto-adjust color contrast using normalize.")
     parser.add_argument("-lin", "--Linearize", action="store_true", help="Linearize PDF (requires QPDF).")
     parser.add_argument("-tcr", "--TotalCompressionThreshold", type=float, help="Threshold to decide whether to use converted files.")
     parser.add_argument("--LogPath", help="Path for logging.")

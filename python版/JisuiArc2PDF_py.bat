@@ -38,27 +38,48 @@ set "py_params="
 
 set /p skip_in="Skip compression (y/n)? [n]: "
 if /i "%skip_in%"=="y" (
-    set "py_params=%py_params% --SkipCompression"
+    set "py_params=%py_params% -sc"
     goto :execute_command
 )
 
 set /p quality_in="Quality (1-100) [85]: "
-if not "%quality_in%"=="" set "py_params=%py_params% --Quality %quality_in%"
+if not "%quality_in%"=="" set "py_params=%py_params% -q %quality_in%"
 
 set /p sat_in="Saturation threshold [0.05]: "
-if not "%sat_in%"=="" set "py_params=%py_params% --SaturationThreshold %sat_in%"
+if not "%sat_in%"=="" set "py_params=%py_params% -s %sat_in%"
 
 set /p tcr_in="Total compression threshold (0-100, optional): "
-if not "%tcr_in%"=="" set "py_params=%py_params% --TotalCompressionThreshold %tcr_in%"
+if not "%tcr_in%"=="" set "py_params=%py_params% -tcr %tcr_in%"
 
 set /p deskew_in="Deskew (auto-straighten) (y/n)? [n]: "
 if /i "%deskew_in%"=="y" (
-    set "py_params=%py_params% --Deskew"
+    set "py_params=%py_params% -ds"
+)
+
+REM Ask for contrast
+set /p gray_contrast_in="Adjust Grayscale contrast (y/n)? [n]: "
+if /i "%gray_contrast_in%"=="y" (
+    set /p level_in="Grayscale Level value [10%%,90%%]: "
+    if "%level_in%"=="" set "level_in=10%%,90%%"
+    set "py_params=%py_params% -gl ""%level_in%"""
+)
+
+set "auto_contrast_in="
+set /p auto_contrast_in="Auto-adjust Color contrast (y/n)? [n]: "
+if /i "%auto_contrast_in%"=="y" (
+    set "py_params=%py_params% -ac"
+) else (
+    set /p color_contrast_in="Adjust Color contrast (y/n)? [n]: "
+    if /i "%color_contrast_in%"=="y" (
+        set /p bright_in="Color Brightness-Contrast value [0x25]: "
+        if "%bright_in%"=="" set "bright_in=0x25"
+        set "py_params=%py_params% -cc ""%bright_in%"""
+    )
 )
 
 set /p trim_in="Trim margins (y/n)? [n]: "
 if /i "%trim_in%"=="y" (
-    set "py_params=%py_params% --Trim"
+    set "py_params=%py_params% -t"
     set /p fuzz_in="Fuzz factor for trim (e.g., 1%%) [1%%]: "
     if not "%fuzz_in%"=="" (
         set "py_params=%py_params% --Fuzz ""%fuzz_in%"""
@@ -67,7 +88,7 @@ if /i "%trim_in%"=="y" (
 
 set /p linearize_in="Linearize PDF (web optimization) (y/n)? [n]: "
 if /i "%linearize_in%"=="y" (
-    set "py_params=%py_params% --Linearize"
+    set "py_params=%py_params% -lin"
 )
 
 REM ============================================================================

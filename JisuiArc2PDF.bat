@@ -85,6 +85,27 @@ if /i "%deskew_in%"=="y" (
     set "ps_params=%ps_params% -Deskew"
 )
 
+REM Ask for contrast
+set /p gray_contrast_in="Adjust Grayscale contrast (y/n)? [n]: "
+if /i "%gray_contrast_in%"=="y" (
+    set /p level_in="Grayscale Level value [10%%,90%%]: "
+    if "%level_in%"=="" set "level_in=10%%,90%%"
+    set "ps_params=%ps_params% -GrayscaleLevel ""%level_in%"""
+)
+
+set "auto_contrast_in="
+set /p auto_contrast_in="Auto-adjust Color contrast (y/n)? [n]: "
+if /i "%auto_contrast_in%"=="y" (
+    set "ps_params=%ps_params% -AutoContrast"
+) else (
+    set /p color_contrast_in="Adjust Color contrast (y/n)? [n]: "
+    if /i "%color_contrast_in%"=="y" (
+        set /p bright_in="Color Brightness-Contrast value [0x25]: "
+        if "%bright_in%"=="" set "bright_in=0x25"
+        set "ps_params=%ps_params% -ColorContrast ""%bright_in%"""
+    )
+)
+
 REM Ask for trimming
 set /p trim_in="Trim margins (y/n)? [n]: "
 if /i "%trim_in%"=="y" (

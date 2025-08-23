@@ -172,6 +172,18 @@ param(
     [switch]$Deskew,
 
     [Parameter(Mandatory=$false)]
+    [Alias('gl')]
+    [string]$GrayscaleLevel,
+
+        [Parameter(Mandatory=$false)]
+    [Alias('cc')]
+    [string]$ColorContrast,
+
+    [Parameter(Mandatory=$false)]
+    [Alias('ac')]
+    [switch]$AutoContrast,
+
+    [Parameter(Mandatory=$false)]
     [string]$LogPath
 )
 
@@ -583,6 +595,12 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                     Write-Host "  -> 傾きを補正します。"
                 }
 
+                # ContrastLevel if requested
+                if ($PSBoundParameters.ContainsKey('ContrastLevel')) {
+                    $magickArgs += "-level", $ContrastLevel
+                    Write-Host "  -> コントラストを調整します (Level: $ContrastLevel)。"
+                }
+
                 # Trim margins if requested
                 if ($Trim.IsPresent) {
                     $magickArgs += "-fuzz", $Fuzz, "-trim", "+repage"
@@ -605,10 +623,24 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                     Write-Host "  -> グレースケールを検出しました。ファイル名: $newFileName";
                     $destinationPath = Join-Path $tempDirConvertedGray $newFileName
                     $magickArgs += "-colorspace", "Gray"
+                    # Add GrayscaleLevel if requested
+                    if ($PSBoundParameters.ContainsKey('GrayscaleLevel')) {
+                        $magickArgs += "-level", $GrayscaleLevel
+                        Write-Host "  -> グレースケールコントラストを調整します (Level: $GrayscaleLevel)。"
+                    }
                 }
                 else {
                     Write-Host "  -> カラーを検出しました。ファイル名: $newFileName";
                     $destinationPath = Join-Path $tempDirConvertedColor $newFileName
+                    # Add AutoContrast or ColorContrast if requested
+                    if ($AutoContrast.IsPresent) {
+                        $magickArgs += "-normalize"
+                        Write-Host "  -> カラーコントラストを自動調整します (-normalize)。"
+                    }
+                    elseif ($PSBoundParameters.ContainsKey('ColorContrast')) {
+                        $magickArgs += "-brightness-contrast", $ColorContrast
+                        Write-Host "  -> カラーコントラストを調整します (Value: $ColorContrast)。"
+                    }
                 }
                 $magickArgs += "$destinationPath"
 
@@ -695,6 +727,11 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                         $passthroughArgs += "-deskew", "40%"
                     }
 
+                    # ContrastLevel if requested
+                    if ($PSBoundParameters.ContainsKey('ContrastLevel')) {
+                        $passthroughArgs += "-level", $ContrastLevel
+                    }
+
                     # Trim margins if requested
                     if ($Trim.IsPresent) {
                         $passthroughArgs += "-fuzz", $Fuzz, "-trim", "+repage"
@@ -702,6 +739,16 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                     
                     if ($result.Saturation -lt $SaturationThreshold) {
                         $passthroughArgs += "-colorspace", "Gray"
+                        if ($PSBoundParameters.ContainsKey('GrayscaleLevel')) {
+                            $passthroughArgs += "-level", $GrayscaleLevel
+                        }
+                    } else {
+                        if ($AutoContrast.IsPresent) {
+                            $passthroughArgs += "-normalize"
+                        }
+                        elseif ($PSBoundParameters.ContainsKey('ColorContrast')) {
+                            $passthroughArgs += "-brightness-contrast", $ColorContrast
+                        }
                     }
                     
                     $passthroughArgs += "-quality", $Quality
@@ -895,6 +942,15 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             }
             if ($Linearize.IsPresent) {
                 $logParts += "Linearize: $true"
+            }
+            if ($AutoContrast.IsPresent) {
+                $logParts += "AutoContrast: $true"
+            }
+            elseif ($PSBoundParameters.ContainsKey('ColorContrast')) {
+                $logParts += "ColorContrast: $ColorContrast"
+            }
+            if ($PSBoundParameters.ContainsKey('GrayscaleLevel')) {
+                $logParts += "GrayscaleLevel: $GrayscaleLevel"
             }
             $logParts += @(
                 "Height: ${targetHeight}px",
