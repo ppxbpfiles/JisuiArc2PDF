@@ -158,6 +158,20 @@ param(
     [switch]$SkipCompression,
 
     [Parameter(Mandatory=$false)]
+    [switch]$Trim,
+
+    [Parameter(Mandatory=$false)]
+    [string]$Fuzz = "1%",
+
+    [Parameter(Mandatory=$false)]
+    [Alias('lin')]
+    [switch]$Linearize,
+
+    [Parameter(Mandatory=$false)]
+    [Alias('ds')]
+    [switch]$Deskew,
+
+    [Parameter(Mandatory=$false)]
     [string]$LogPath
 )
 
@@ -394,6 +408,25 @@ if ($PSBoundParameters.ContainsKey('PdfCpuPath') -and (Test-Path -LiteralPath $P
     }
 }
 
+# QPDFのパス解決（リニアライズ処理に使用）
+# QPDFはスクリプトと同じフォルダに配置されているか、環境変数PATHから検索する
+$qpdf_exe = $null
+$localExePath = Join-Path $PSScriptRoot "qpdf.exe"
+if (Test-Path -LiteralPath $localExePath -PathType Leaf) {
+    $qpdf_exe = $localExePath
+} else {
+    $foundPath = (cmd.exe /c "where.exe qpdf.exe" 2>$null).Split([System.Environment]::NewLine) | Select-Object -First 1
+    if ($foundPath) {
+        $trimmedPath = $foundPath.Trim()
+        if ($trimmedPath -and (Test-Path -LiteralPath $trimmedPath -PathType Leaf)) {
+            $qpdf_exe = $trimmedPath
+        }
+    }
+    if (-not $qpdf_exe) {
+        $qpdf_exe = (Get-Command 'qpdf' -ErrorAction SilentlyContinue).Source
+    }
+}
+
 if (-not $magick_exe) {
     Write-Error "ImageMagick (magick.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。"
     exit 1
@@ -516,7 +549,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             $conversionResults = @() # Holds results for each file
 
             foreach ($file in $imageFiles) {
-                Write-Host "Processing $($file.Name)..."
+                Write-Host "ファイル処理中: $($file.Name)"
                 
                 # 画像の平均彩度を計算
                 $SATURATION_STR = & $magick_exe "$($file.FullName)" -colorspace HSL -channel G -separate +channel -format "%[mean]" info:
@@ -544,12 +577,24 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 $magickArgs = @()
                 $magickArgs += "$($file.FullName)"
 
+                # Deskew if requested
+                if ($Deskew.IsPresent) {
+                    $magickArgs += "-deskew", "40%"
+                    Write-Host "  -> 傾きを補正します。"
+                }
+
+                # Trim margins if requested
+                if ($Trim.IsPresent) {
+                    $magickArgs += "-fuzz", $Fuzz, "-trim", "+repage"
+                    Write-Host "  -> 余白を除去します (Fuzz: $Fuzz)。"
+                }
+
                 # $targetHeight が 0 より大きい (つまり、リサイズが有効な) 場合のみ、高さ比較とリサイズ処理を行う
                 if ($targetHeight -gt 0 -and $originalHeight -ge $targetHeight) {
                     $magickArgs += "-resize", "x$targetHeight"
-                    Write-Host "  -> Resizing image from ${originalHeight}px to ${targetHeight}px."
+                    Write-Host "  -> 画像をリサイズします (${originalHeight}px -> ${targetHeight}px)。"
                 } else {
-                    Write-Host "  -> Skipping resize for image (Height: ${originalHeight}px)."
+                    Write-Host "  -> 画像のリサイズをスキップします (高さ: ${originalHeight}px)。"
                 }
 
                 $magickArgs += "-density", $targetDpi, "-quality", $Quality
@@ -557,12 +602,12 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 # 彩度に応じて出力先と色空間設定を決定
                 $destinationPath = ""
                 if ($SATURATION -lt $SaturationThreshold) {
-                    Write-Host "  -> Grayscale detected. Saving as $newFileName";
+                    Write-Host "  -> グレースケールを検出しました。ファイル名: $newFileName";
                     $destinationPath = Join-Path $tempDirConvertedGray $newFileName
                     $magickArgs += "-colorspace", "Gray"
                 }
                 else {
-                    Write-Host "  -> Color detected. Saving as $newFileName";
+                    Write-Host "  -> カラーを検出しました。ファイル名: $newFileName";
                     $destinationPath = Join-Path $tempDirConvertedColor $newFileName
                 }
                 $magickArgs += "$destinationPath"
@@ -644,6 +689,16 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                     # パススルー処理でも彩度をチェックし、グレースケール化を適用する
                     $passthroughArgs = @()
                     $passthroughArgs += "$($result.OriginalPath)"
+                    
+                    # Deskew if requested
+                    if ($Deskew.IsPresent) {
+                        $passthroughArgs += "-deskew", "40%"
+                    }
+
+                    # Trim margins if requested
+                    if ($Trim.IsPresent) {
+                        $passthroughArgs += "-fuzz", $Fuzz, "-trim", "+repage"
+                    }
                     
                     if ($result.Saturation -lt $SaturationThreshold) {
                         $passthroughArgs += "-colorspace", "Gray"
@@ -742,10 +797,29 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         Remove-Item -Path $tempJsonPath -Force
 
         # PDFCPU で最適化を一時PDFに対して実行
+        Write-Host "[情報] PDFを最適化しています..."
         $optimizeArgs = @('optimize', $tempPdfOutputPath)
         & $pdfcpu_exe @optimizeArgs
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "pdfcpu optimize の実行に失敗しました。終了コード: $LASTEXITCODE"
+        }
+
+        # PDFのリニアライズを実行（-Linearize スイッチが指定されている場合）
+        if ($Linearize.IsPresent) {
+            if ($qpdf_exe) {
+                Write-Host "[情報] PDFをリニアライズ（ウェブ最適化）しています（QPDFを使用）..."
+                $tempLinearizedPdfPath = Join-Path $tempDir "linearized_$([System.IO.Path]::GetFileName($tempPdfOutputPath))"
+                $linearizeArgs = @('--linearize', $tempPdfOutputPath, $tempLinearizedPdfPath)
+                & $qpdf_exe @linearizeArgs
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warning "qpdf linearize の実行に失敗しました。終了コード: $LASTEXITCODE"
+                } else {
+                    # 処理済みの一次PDFファイルを最終的な場所に移動
+                    Move-Item -Path $tempLinearizedPdfPath -Destination $tempPdfOutputPath -Force
+                }
+            } else {
+                Write-Warning "リニアライズが指定されましたが、QPDF (qpdf.exe) が見つかりませんでした。リニアライズ処理をスキップします。"
+            }
         }
 
         # 処理済みの一次PDFファイルを最終的な場所に移動
@@ -811,6 +885,16 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             }
             if ($PSBoundParameters.ContainsKey('TotalCompressionThreshold')) {
                 $logParts += "TotalCompressionThreshold: $TotalCompressionThreshold"
+            }
+            if ($Trim.IsPresent) {
+                $logParts += "Trim: $true"
+                $logParts += "Fuzz: $Fuzz"
+            }
+            if ($Deskew.IsPresent) {
+                $logParts += "Deskew: $true"
+            }
+            if ($Linearize.IsPresent) {
+                $logParts += "Linearize: $true"
             }
             $logParts += @(
                 "Height: ${targetHeight}px",

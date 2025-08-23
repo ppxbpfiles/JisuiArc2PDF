@@ -79,6 +79,28 @@ REM Ask for the total compression ratio threshold.
 set /p tcr_in="Total compression threshold (0-100, optional): "
 if not "%tcr_in%"=="" set "ps_params=%ps_params% -TotalCompressionThreshold %tcr_in%"
 
+REM Ask for deskew
+set /p deskew_in="Deskew (auto-straighten) (y/n)? [n]: "
+if /i "%deskew_in%"=="y" (
+    set "ps_params=%ps_params% -Deskew"
+)
+
+REM Ask for trimming
+set /p trim_in="Trim margins (y/n)? [n]: "
+if /i "%trim_in%"=="y" (
+    set "ps_params=%ps_params% -Trim"
+    set /p fuzz_in="Fuzz factor for trim (e.g., 1%) [1%]: "
+    if not "%fuzz_in%"=="" (
+        set "ps_params=%ps_params% -Fuzz ""%fuzz_in%"""
+    )
+)
+
+REM Ask for linearization
+set /p linearize_in="Linearize PDF (web optimization) (y/n)? [n]: "
+if /i "%linearize_in%"=="y" (
+    set "ps_params=%ps_params% -Linearize"
+)
+
 
 REM ============================================================================
 REM Resolution Settings
