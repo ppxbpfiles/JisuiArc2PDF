@@ -27,7 +27,7 @@
        - 入手先: https://imagemagick.org/script/download.php
 
     2. 7-Zip (7z.exe)
-       - 役割: RARおよびZIP書庫を展開するために使用します。
+       - 役割: ZIPおよびRAR書庫を展開するために使用します。
        - 入手先: https://www.7-zip.org/
 
     3. PDFCPU (pdfcpu.exe)
@@ -188,6 +188,103 @@ param(
 )
 
 # ==============================================================================
+# 対話モードでのパラメータ入力
+# ==============================================================================
+# コマンドラインでパスが指定されなかった場合、対話的に入力を求める
+if (-not $PSBoundParameters.ContainsKey('ArchiveFilePaths')) {
+    while (-not $ArchiveFilePaths) {
+        $inputPath = Read-Host "処理する書庫のパスを入力してください (例: Y:\books\*.zip)"
+        if (-not ([string]::IsNullOrWhiteSpace($inputPath))) {
+            try {
+                # ワイルドカードを解決し、存在を確認
+                $resolved = Get-Item -LiteralPath $inputPath -ErrorAction Stop
+                if ($resolved) {
+                    $ArchiveFilePaths = $resolved.FullName
+                }
+            } catch {
+                try {
+                    $resolved = Resolve-Path -Path $inputPath -ErrorAction Stop
+                    if ($resolved) {
+                        $ArchiveFilePaths = $resolved.ProviderPath
+                    }
+                } catch {
+                    Write-Warning "エラー: 指定されたパスにファイルが見つかりません: '$inputPath'。パスを確認して再入力してください。"
+                }
+            }
+        } else {
+             Write-Warning "パスが入力されていません。"
+        }
+    }
+}
+
+# コマンドラインで詳細なオプションが指定されていない場合、対話モードを開始
+if ($PSBoundParameters.Count -le 1 -and ($PSBoundParameters.Count -eq 0 -or $PSBoundParameters.ContainsKey('ArchiveFilePaths'))) {
+    Write-Host "`n----------------------------------------" -ForegroundColor Green
+    Write-Host "対話モードで変換設定を行います。" -ForegroundColor Green
+    Write-Host "角括弧 [] 内のデフォルト値を使用する場合は、何も入力せずにEnterキーを押してください。"
+    Write-Host "----------------------------------------"
+
+    $skip_in = Read-Host "圧縮をスキップしますか (y/n)? [n]"
+    if ($skip_in.ToLower() -eq 'y') { $SkipCompression = $true }
+
+    if (-not $SkipCompression.IsPresent) {
+        $quality_in = Read-Host "品質 (1-100) [85]"
+        if (-not [string]::IsNullOrWhiteSpace($quality_in)) { $Quality = [int]$quality_in }
+
+        $sat_in = Read-Host "彩度のしきい値 [0.05]"
+        if (-not [string]::IsNullOrWhiteSpace($sat_in)) { $SaturationThreshold = [double]$sat_in }
+
+        $tcr_in = Read-Host "合計圧縮率のしきい値 (0-100, optional)"
+        if (-not [string]::IsNullOrWhiteSpace($tcr_in)) { $TotalCompressionThreshold = [double]$tcr_in }
+
+        $deskew_in = Read-Host "傾き補正 (y/n)? [n]"
+        if ($deskew_in.ToLower() -eq 'y') { $Deskew = $true }
+
+        $gray_contrast_in = Read-Host "グレースケールコントラスト調整 (y/n)? [n]"
+        if ($gray_contrast_in.ToLower() -eq 'y') {
+            $level_in = Read-Host "グレースケール Level値 [10%,90%]"
+            $GrayscaleLevel = if (-not [string]::IsNullOrWhiteSpace($level_in)) { $level_in } else { "10%,90%" }
+        }
+
+        $auto_contrast_in = Read-Host "カラーコントラスト自動調整 (y/n)? [n]"
+        if ($auto_contrast_in.ToLower() -eq 'y') {
+            $AutoContrast = $true
+        } else {
+            $color_contrast_in = Read-Host "カラーコントラスト手動調整 (y/n)? [n]"
+            if ($color_contrast_in.ToLower() -eq 'y') {
+                $bright_in = Read-Host "Brightness-Contrast値 [0x25]"
+                $ColorContrast = if (-not [string]::IsNullOrWhiteSpace($bright_in)) { $bright_in } else { "0x25" }
+            }
+        }
+
+        $trim_in = Read-Host "余白除去 (y/n)? [n]"
+        if ($trim_in.ToLower() -eq 'y') {
+            $Trim = $true
+            $fuzz_in = Read-Host "Fuzz係数 (例: 1%) [1%]"
+            if (-not [string]::IsNullOrWhiteSpace($fuzz_in)) { $Fuzz = $fuzz_in }
+        }
+
+        $linearize_in = Read-Host "PDFをリニアライズしますか (y/n)? [n]"
+        if ($linearize_in.ToLower() -eq 'y') { $Linearize = $true }
+
+        $res_choice = Read-Host "解像度設定: 1=高さ指定, 2=用紙サイズ+DPI [2]"
+        if ($res_choice -eq '1') {
+            $height_in = Read-Host "高さ (ピクセル)"
+            if (-not [string]::IsNullOrWhiteSpace($height_in)) { $Height = [int]$height_in }
+            $dpi_for_h_in = Read-Host "DPI [144]"
+            if (-not [string]::IsNullOrWhiteSpace($dpi_for_h_in)) { $Dpi = [int]$dpi_for_h_in }
+        } else {
+            $paper_in = Read-Host "用紙サイズ [A4]"
+            $PaperSize = if (-not [string]::IsNullOrWhiteSpace($paper_in)) { $paper_in } else { "A4" }
+            $dpi_in = Read-Host "DPI [144]"
+            $Dpi = if (-not [string]::IsNullOrWhiteSpace($dpi_in)) { [int]$dpi_in } else { 144 }
+        }
+    }
+    Write-Host "----------------------------------------`n" -ForegroundColor Green
+}
+
+
+# ==============================================================================
 # ログファイルパス設定
 # ==============================================================================
 $logFilePath = ""
@@ -280,42 +377,7 @@ else {
 }
 # ==============================================================================
 
-# ==============================================================================
-# 引数チェック
-# ==============================================================================
-if ($PSBoundParameters.ContainsKey('ArchiveFilePaths') -eq $false -or -not $ArchiveFilePaths) {
-    $helpMessage = @"
---------------------------------------------------------------------------------
-JisuiArc2PDF: 書庫(7-zip対応形式)を高品質なPDFに変換します。
---------------------------------------------------------------------------------
 
-使用法:
-  pwsh -File .\JisuiArc2PDF.ps1 <対象ファイル/パターン> [オプション]
-
-説明:
-  処理対象となる書庫ファイルのパス、またはワイルドカード
-  （例: '*.rar'）を一つ以上指定してください。
-
-使用例:
-  # 単一のファイルを処理
-  .\JisuiArc2PDF.ps1 "MyBook.zip"
-
-  # カレントディレクトリの全てのrarファイルを処理
-  .\JisuiArc2PDF.ps1 *.rar
-
-  # 異なるフォルダの全てのzipファイルを処理 (パスにスペース等が含まれる場合はダブルクォートで囲む)
-  .\JisuiArc2PDF.ps1 "C:\Path\To\Archives\*.zip"
-  .\JisuiArc2PDF.ps1 "..\OtherFolder\*.rar"
-
-  # B5サイズ, 300dpiで高さを自動計算
-  .\JisuiArc2PDF.ps1 *.rar -PaperSize B5 -Dpi 300
-
-詳細なヘルプ:
-  pwsh -Command "Get-Help .\JisuiArc2PDF.ps1 -Full"
-"@
-    Write-Host $helpMessage
-    exit 0
-}
 
 # ==============================================================================
 Write-Verbose "[診断] スクリプト開始。受信した引数: $($ArchiveFilePaths -join ', ')"
