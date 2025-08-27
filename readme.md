@@ -523,7 +523,7 @@ Timestamp="2025-08-23 19:00:00" Status="Success with pages skipped" Source="MyBo
 マークしたファイルに対して個別に処理できます。
 
 ```javascript
-%Os pwsh JisuiArc2PDF.ps1 %FC %:*trimmark
+%Os pwsh JisuiArc2PDF.ps1 (スイッチ) %FC %:*trimmark
 ```
 
 ## 作成経緯について
