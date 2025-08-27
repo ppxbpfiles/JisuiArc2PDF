@@ -441,8 +441,7 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
             if log_file_path:
                 try:
                     log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    import shlex
-                    command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv[1:])
+                    command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv)
                     error_message = "Failed to write to output file because it was in use by another process."
                     log_message = (
                         f'Timestamp="{log_timestamp}" '
@@ -461,67 +460,67 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
         print(f"\nSuccess! PDF created at: {output_pdf_path}")
 
         # --------------------------------------------------------------------------
-# 3.4. ログの記録
-# --------------------------------------------------------------------------
-if log_file_path:
-    try:
-        log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv)
-        skipped_count = len(skipped_files)
-        status = "Success with pages skipped" if skipped_count > 0 else "Success"
+        # 3.4. ログの記録
+        # --------------------------------------------------------------------------
+        if log_file_path:
+            try:
+                log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv)
+                skipped_count = len(skipped_files)
+                status = "Success with pages skipped" if skipped_count > 0 else "Success"
 
-        settings_parts = []
-        if args.PaperSize: settings_parts.append(f"PaperSize:{args.PaperSize}")
-        if args.TotalCompressionThreshold is not None: settings_parts.append(f"TCR:{args.TotalCompressionThreshold}")
-        if args.Trim: settings_parts.append(f"Trim:True"); settings_parts.append(f"Fuzz:{args.Fuzz}")
-        if args.Deskew: settings_parts.append(f"Deskew:True")
-        if args.SplitPages: settings_parts.append(f"SplitPages:True"); settings_parts.append(f"Binding:{args.Binding}")
-        if args.AutoContrast: settings_parts.append(f"AutoContrast:True")
-        elif args.ColorContrast: settings_parts.append(f"ColorContrast:{args.ColorContrast}")
-        if args.GrayscaleLevel: settings_parts.append(f"GrayscaleLevel:{args.GrayscaleLevel}")
-        if args.Linearize: settings_parts.append(f"Linearize:True")
-        if hasattr(args, 'SetPageSize') and args.SetPageSize:
-            settings_parts.append(f"SetPageSize:True")
-            if args.Landscape:
-                settings_parts.append(f"Landscape:True")
-        settings_parts.append(f"Height:{target_height}px")
-        settings_parts.append(f"DPI:{target_dpi}")
-        settings_parts.append(f"Quality:{args.Quality}")
-        settings_parts.append(f"Saturation:{args.SaturationThreshold}")
-        settings_string = ", ".join(settings_parts)
+                settings_parts = []
+                if args.PaperSize: settings_parts.append(f"PaperSize:{args.PaperSize}")
+                if args.TotalCompressionThreshold is not None: settings_parts.append(f"TCR:{args.TotalCompressionThreshold}")
+                if args.Trim: settings_parts.append(f"Trim:True"); settings_parts.append(f"Fuzz:{args.Fuzz}")
+                if args.Deskew: settings_parts.append(f"Deskew:True")
+                if args.SplitPages: settings_parts.append(f"SplitPages:True"); settings_parts.append(f"Binding:{args.Binding}")
+                if args.AutoContrast: settings_parts.append(f"AutoContrast:True")
+                elif args.ColorContrast: settings_parts.append(f"ColorContrast:{args.ColorContrast}")
+                if args.GrayscaleLevel: settings_parts.append(f"GrayscaleLevel:{args.GrayscaleLevel}")
+                if args.Linearize: settings_parts.append(f"Linearize:True")
+                if hasattr(args, 'SetPageSize') and args.SetPageSize:
+                    settings_parts.append(f"SetPageSize:True")
+                    if args.Landscape:
+                        settings_parts.append(f"Landscape:True")
+                settings_parts.append(f"Height:{target_height}px")
+                settings_parts.append(f"DPI:{target_dpi}")
+                settings_parts.append(f"Quality:{args.Quality}")
+                settings_parts.append(f"Saturation:{args.SaturationThreshold}")
+                settings_string = ", ".join(settings_parts)
 
-        log_message = (
-            f'Timestamp="{log_timestamp}" '
-            f'Status="{status}" '
-            f'Source="{{os.path.basename(archive_path)}}" '
-            f'Output="{output_pdf_path}" '
-            f'Images={{len(image_files)}} '
-            f'Converted={converted_count} '
-            f'Originals={original_count} '
-            f'Skipped={skipped_count} '
-            f'Settings="{settings_string}"'
-        )
+                log_message = (
+                    f'Timestamp="{log_timestamp}" '
+                    f'Status="{status}" '
+                    f'Source="{os.path.basename(archive_path)}" '
+                    f'Output="{output_pdf_path}" '
+                    f'Images={len(image_files)} '
+                    f'Converted={converted_count} '
+                    f'Originals={original_count} '
+                    f'Skipped={skipped_count} '
+                    f'Settings="{settings_string}"'
+                )
 
-        log_details = []
-        if not args.SkipCompression:
-            for res in conversion_results:
-                ratio_str = ""
-                if res['original_size'] > 0:
-                    ratio = (res['converted_size'] / res['original_size'] * 100)
-                    ratio_str = f" (Ratio: {ratio:.2f} %)"
-                log_status = "Converted" if use_converted else "Original"
-                log_details.append(f"    - {res['original_path'].name}: {log_status}{ratio_str}")
-        
-        for skipped_file in skipped_files:
-            log_details.append(f"    - {skipped_file.name}: SKIPPED (File conversion failed)")
+                log_details = []
+                if not args.SkipCompression:
+                    for res in conversion_results:
+                        ratio_str = ""
+                        if res['original_size'] > 0:
+                            ratio = (res['converted_size'] / res['original_size'] * 100)
+                            ratio_str = f" (Ratio: {ratio:.2f} %)"
+                        log_status = "Converted" if use_converted else "Original"
+                        log_details.append(f"    - {res['original_path'].name}: {log_status}{ratio_str}")
+                
+                for skipped_file in skipped_files:
+                    log_details.append(f"    - {skipped_file.name}: SKIPPED (File conversion failed)")
 
-        full_log_content = [f"Command: {command_line}", log_message] + log_details
-        with open(log_file_path, "a", encoding="utf-8") as f:
-            f.write("\n".join(full_log_content) + "\n\n")
+                full_log_content = [f"Command: {command_line}", log_message] + log_details
+                with open(log_file_path, "a", encoding="utf-8") as f:
+                    f.write("\n".join(full_log_content) + "\n\n")
 
-        if args.Verbose: print(f"Wrote log to: {log_file_path}")
-    except Exception as e:
-        print(f"Warning: Failed to write to log file: {e}", file=sys.stderr)
+                if args.Verbose: print(f"Wrote log to: {log_file_path}")
+            except Exception as e:
+                print(f"Warning: Failed to write to log file: {e}", file=sys.stderr)
 
     except Exception as e:
         print(f"Error processing {os.path.basename(archive_path)}: {e}", file=sys.stderr)
@@ -709,7 +708,7 @@ def main():
             log_file_path = None
 
     if args.Verbose:
-        print("--- Tool Paths ---")
+        print("-- Tool Paths --")
         for tool, path in tools.items():
             if path: print(f"{tool}: {path}")
         print("--------------------")
