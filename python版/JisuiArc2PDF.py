@@ -9,6 +9,7 @@ import re
 import datetime
 from pathlib import Path
 import json
+import shlex
 
 # --- ヘルパー関数 ---
 
@@ -86,6 +87,19 @@ def get_image_height(file_path: str, magick_exe: str) -> int | None:
         print(f"Warning: Could not get height for {os.path.basename(file_path)}. Error: {e}", file=sys.stderr)
         return None
 
+def get_image_dimensions(file_path: str, magick_exe: str) -> tuple[int, int] | None:
+    """
+    ImageMagick を使用して画像の幅と高さ（ピクセル）を取得します。
+    取得に失敗した場合は None を返します。
+    """
+    try:
+        result = subprocess.run([magick_exe, "identify", "-format", "%w %h", str(file_path)], check=True, capture_output=True, text=True)
+        width, height = map(int, result.stdout.split())
+        return width, height
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
+        print(f"Warning: Could not get dimensions for {os.path.basename(file_path)}. Error: {e}", file=sys.stderr)
+        return None
+
 def get_image_saturation(file_path: str, magick_exe: str) -> float:
     """
     画像の平均彩度を取得します。
@@ -144,24 +158,20 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
         if args.Verbose:
             print(f"Created temporary directory: {temp_dir}")
 
-        # --- アーカイブの展開 ---
-        # 7-Zip を使用してアーカイブを一時ディレクトリに展開します。
+        # --------------------------------------------------------------------------
+        # 1. アーカイブの展開と画像ファイルのリストアップ
+        # --------------------------------------------------------------------------
         print("Extracting archive...")
         subprocess.run(
             [tools['sevenzip'], "e", archive_path, f"-o{temp_dir}", "-y"],
             check=True, capture_output=True, timeout=300
         )
 
-        # --- 画像ファイルの特定と並び替え ---
-        # 一時ディレクトリ内を再帰的に探索し、ImageMagickで画像ファイルを識別します。
-        # 非画像ファイルは自動的に無視されます。
-        # ファイル名に含まれる数字を数値として解釈して自然順ソートを行い、正しいページ順序を維持します。
         print("Finding and sorting image files...")
         image_files = []
-        # Walk through all files and identify images
         for root, _, files in os.walk(temp_dir):
-            # Do not search in our own conversion output directory
-            if "converted" in Path(root).parts or "passthrough" in Path(root).parts:
+            # 自身の処理で生成した中間ファイルが含まれるディレクトリは検索対象外にする
+            if "converted" in Path(root).parts or "passthrough" in Path(root).parts or "split_pages" in Path(root).parts:
                 continue
             for file in files:
                 full_path = Path(root) / file
@@ -170,14 +180,59 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
                 elif args.Verbose:
                     print(f"  Skipping non-image file: {file}")
         
+        # ファイル名に含まれる数字を数値としてソート（自然順ソート）し、ページの順序を正しく維持する
         image_files.sort(key=lambda f: natural_sort_key(f.name))
+
+        # --------------------------------------------------------------------------
+        # 2. 見開きページの分割 (オプション)
+        # --------------------------------------------------------------------------
+        if args.SplitPages:
+            print(f"[Info] Splitting spread pages (Binding: {args.Binding})...")
+            processed_image_files = []
+            split_dir = temp_dir / "split_pages"
+            split_dir.mkdir()
+
+            for img_path in image_files:
+                try:
+                    dimensions = get_image_dimensions(str(img_path), tools['magick'])
+                    if dimensions:
+                        width, height = dimensions
+                        # 幅が高さの1.2倍より大きい画像を見開きページと判断
+                        if width > height * 1.2:
+                            if args.Verbose: print(f"  -> Splitting: {img_path.name} ({width}x{height})")
+                            base_name = img_path.stem
+                            left_page_path = split_dir / f"{base_name}_1_left.jpg"
+                            right_page_path = split_dir / f"{base_name}_2_right.jpg"
+
+                            # ImageMagickのcrop機能で画像を左右50%で分割
+                            subprocess.run([tools['magick'], str(img_path), "-crop", "50%x100%+0+0", "+repage", str(left_page_path)], check=True, capture_output=True)
+                            subprocess.run([tools['magick'], str(img_path), "-crop", f"50%x100%+{width//2}+0", "+repage", str(right_page_path)], check=True, capture_output=True)
+
+                            if left_page_path.exists() and right_page_path.exists():
+                                # 本の綴じ方向に応じてページの順序を決定
+                                if args.Binding == 'Right': # 右綴じ
+                                    processed_image_files.append(right_page_path)
+                                    processed_image_files.append(left_page_path)
+                                else: # 左綴じ
+                                    processed_image_files.append(left_page_path)
+                                    processed_image_files.append(right_page_path)
+                            else:
+                                print(f"Warning: Failed to split {img_path.name}. Skipping page.", file=sys.stderr)
+                        else:
+                            processed_image_files.append(img_path)
+                    else:
+                        print(f"Warning: Could not get dimensions for {img_path.name}. Skipping page.", file=sys.stderr)
+                except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                    print(f"Warning: Error splitting {img_path.name}. It will be skipped. Error: {e}", file=sys.stderr)
+            
+            image_files = processed_image_files # 元のリストを分割後のリストで上書き
 
         if not image_files:
             raise ValueError("No image files found in the archive.")
 
-        if args.Verbose:
-            print(f"Found {len(image_files)} images.")
-
+        # --------------------------------------------------------------------------
+        # 3. 画像ファイルの処理とPDF化
+        # --------------------------------------------------------------------------
         files_for_pdf = []
         conversion_results = []
         skipped_files = []
@@ -185,12 +240,8 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
         converted_count = 0
         use_converted = False
 
-        # --- 画像変換処理 ---
+        # A. 圧縮スキップモード
         if args.SkipCompression:
-            # --- スキップ圧縮モード ---
-            # リサイズや品質調整などの最適化処理をスキップします。
-            # JPEG以外のファイルは、画質劣化を最小限に抑えるためJPEGに変換されます。
-            # JPEGファイルはそのままPDF化されます。
             print("[Info] --SkipCompression: Skipping optimization, converting non-JPEGs to JPEG.")
             jpeg_extensions = {'.jpg', '.jpeg', '.jfif', '.jpe'}
             passthrough_dir = temp_dir / "sc_passthrough"
@@ -199,10 +250,8 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
             for i, img_path in enumerate(image_files):
                 if img_path.suffix.lower() in jpeg_extensions:
                     files_for_pdf.append(str(img_path))
-                    if args.Verbose: print(f"  -> {img_path.name}: Is JPEG, no conversion needed.")
                 else:
                     passthrough_path = passthrough_dir / f"{i:04d}.jpg"
-                    if args.Verbose: print(f"  -> {img_path.name}: Is not JPEG, converting.")
                     try:
                         subprocess.run([tools['magick'], str(img_path), str(passthrough_path)], check=True, capture_output=True)
                         files_for_pdf.append(str(passthrough_path))
@@ -210,99 +259,63 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
                         print(f"Warning: Failed to convert {img_path.name} to JPEG. It will be skipped. Error: {e}", file=sys.stderr)
                         skipped_files.append(img_path)
             original_count = len(image_files)
+        # B. 通常の変換モード
         else:
-            # --- 通常の変換ロジック ---
-            # 画像の画質とファイルサイズのバランスを最適化します。
-            # 各画像は、設定に基づいてリサイズ、傾き補正、余白除去、コントラスト調整などが行われます。
-            # グレースケールとカラー画像は自動判別され、それぞれに最適な処理が適用されます。
             print("Converting images...")
             converted_dir = temp_dir / "converted"
             converted_dir.mkdir()
 
-            # --- 個別画像の変換 ---
             total_images = len(image_files)
             for i, img_path in enumerate(image_files):
                 print(f"\r[ {i+1:3d}/{total_images:3d} ] 処理中: {img_path.name}", end='', flush=True)
-                if args.Verbose: print() # Verboseモードでは改行して詳細を表示
+                if args.Verbose: print()
                 
-                # --- 画像情報の取得 ---
-                # 画像の高さと彩度を取得し、リサイズの必要性とグレースケール判定を行います。
                 original_height = get_image_height(str(img_path), tools['magick'])
                 if original_height is None:
                     skipped_files.append(img_path)
-                    if args.Verbose: print(f"  -> 高さの取得に失敗したためスキップ")
                     continue
 
-                # --- ImageMagickコマンドの構築 ---
-                # ImageMagick (`magick`) のコマンドラインを組み立てます。
-                # このコマンドには、ユーザーが指定した各種オプション（傾き補正、余白除去、リサイズ、品質、コントラスト等）が含まれます。
+                # ImageMagickのコマンドライン引数を動的に構築
                 magick_cmd = [tools['magick'], str(img_path)]
-                if args.Deskew: 
-                    magick_cmd.extend(["-deskew", "40%"]) # 傾き補正
-                    if args.Verbose: print(f"          -> 傾き補正")
-                if args.Trim: 
-                    magick_cmd.extend(["-fuzz", args.Fuzz, "-trim", "+repage"]) # 余白除去
-                    if args.Verbose: print(f"          -> 余白除去 (Fuzz: {args.Fuzz})")
+                if args.Deskew: magick_cmd.extend(["-deskew", "40%"])
+                if args.Trim: magick_cmd.extend(["-fuzz", args.Fuzz, "-trim", "+repage"])
                 
-                # 目標の高さが設定されており、かつ元画像がそれより大きい場合のみリサイズします。
-                # これにより、小さな画像が不必要に拡大されることを防ぎます。
-                if target_height > 0 and original_height > target_height: 
+                if target_height > 0 and original_height > target_height:
                     magick_cmd.extend(["-resize", f"x{target_height}"])
-                    if args.Verbose: print(f"          -> リサイズ: {target_height}px")
-                else:
-                    if args.Verbose: print(f"          -> 画像が小さいためリサイズはスキップ")
 
-                # 解像度と品質の設定
                 magick_cmd.extend(["-density", str(target_dpi), "-quality", str(args.Quality)])
-                if args.Verbose: print(f"          -> 解像度設定: {target_dpi}dpi")
-                if args.Verbose: print(f"          -> 画質設定: {args.Quality}")
                 
-                # カラー画像とグレースケール画像の判別と処理
+                # 彩度に基づいてグレースケールかカラーかを判断し、対応する処理を追加
                 saturation = get_image_saturation(str(img_path), tools['magick'])
                 if saturation < args.SaturationThreshold:
-                    # グレースケール画像: グレースケール化とオプションのレベル補正
                     magick_cmd.extend(["-colorspace", "Gray"])
-                    if args.Verbose: print(f"          -> グレースケール変換 (彩度: {saturation:.4f})")
-                    if args.GrayscaleLevel: 
-                        magick_cmd.extend(["-level", args.GrayscaleLevel])
-                        if args.Verbose: print(f"          -> グレースケールレベル補正: {args.GrayscaleLevel}")
+                    if args.GrayscaleLevel: magick_cmd.extend(["-level", args.GrayscaleLevel])
                 else:
-                    # カラー画像: コントラスト調整
-                    if args.Verbose: print(f"          -> カラー画像として処理 (彩度: {saturation:.4f})")
-                    if args.AutoContrast: 
-                        magick_cmd.append("-normalize") # 自動コントラスト
-                        if args.Verbose: print(f"          -> 自動コントラスト調整")
-                    elif args.ColorContrast: 
-                        magick_cmd.extend(["-brightness-contrast", args.ColorContrast]) # 手動コントラスト
-                        if args.Verbose: print(f"          -> 手動コントラスト調整: {args.ColorContrast}")
+                    if args.AutoContrast: magick_cmd.append("-normalize")
+                    elif args.ColorContrast: magick_cmd.extend(["-brightness-contrast", args.ColorContrast])
 
-                # 変換後のファイルパスを設定
                 converted_path = converted_dir / f"{i:04d}.jpg"
                 magick_cmd.append(str(converted_path))
                 
-                # --- 画像変換の実行 ---
                 try:
                     subprocess.run(magick_cmd, check=True, capture_output=True)
                     if not converted_path.exists(): raise FileNotFoundError("Magick command succeeded but output file not found.")
                     
-                    # 変換結果を記録（ファイルサイズ比較用）
+                    # ファイルサイズ比較のため、変換結果を保存
                     conversion_results.append({
                         "original_path": img_path, "converted_path": converted_path,
                         "original_size": img_path.stat().st_size, "converted_size": converted_path.stat().st_size,
                         "saturation": saturation
                     })
-                    if args.Verbose: print(f"          -> JPEGに変換: {converted_path.name}")
                 except (subprocess.CalledProcessError, FileNotFoundError) as e:
                     print(f"Warning: Failed to convert {img_path.name}. It will be skipped. Error: {e}", file=sys.stderr)
                     skipped_files.append(img_path)
 
             if not conversion_results: raise ValueError("All image files failed to convert.")
 
-            # --- ファイルサイズの比較と採用判断 ---
-            # 変換後の画像セットと元の画像セットの合計ファイルサイズを比較します。
-            # ユーザーが指定したしきい値、またはデフォルトのルール（2%増まで許容）に基づいて、
-            # どちらのセットをPDFに採用するかを決定します。
-            # これにより、画質を保ちつつファイルサイズを最適化します。
+            # --------------------------------------------------------------------------
+            # 3.1. ファイルサイズの比較と採用判断
+            # --------------------------------------------------------------------------
             total_original_size = sum(r['original_size'] for r in conversion_results)
             total_converted_size = sum(r['converted_size'] for r in conversion_results)
             
@@ -312,7 +325,6 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
 
             use_converted = False
             if args.TotalCompressionThreshold is not None:
-                # ユーザー指定のしきい値を使用
                 if total_original_size > 0:
                     ratio = (total_converted_size / total_original_size) * 100
                     print(f"[Compare] Compression ratio: {ratio:.2f}% (Threshold: {args.TotalCompressionThreshold}%)")
@@ -320,20 +332,17 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
                         use_converted = True
             else:
                 # デフォルト動作: 変換後が元より2%以上大きい場合は元ファイルを使う
-                if total_original_size == 0: # Prevent division by zero
+                if total_original_size == 0:
                     use_converted = True
                 elif (total_converted_size / total_original_size) < 1.02:
                     use_converted = True
 
-            # --- PDF作成用ファイルセットの準備 ---
             if use_converted:
                 print("[Decision] 変換後のファイルセットを採用します。")
                 files_for_pdf = [str(r['converted_path']) for r in conversion_results]
                 converted_count = len(files_for_pdf)
             else:
-                print("[Decision] 元のファイルセットを採用します。(変換されたファイルは一時ファイルとして使用されます)")
-                # 元の画像セットを使用する場合でも、PDF互換形式（JPEG）に再エンコードします。
-                # このとき、傾き補正、余白除去、グレースケール判定とレベル補正が再適用されます。
+                print("[Decision] 元のファイルセットを採用します。(JPEGに再エンコードされます)")
                 passthrough_dir = temp_dir / "passthrough"
                 passthrough_dir.mkdir()
                 for i, r in enumerate(conversion_results):
@@ -353,7 +362,6 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
                     try:
                         subprocess.run(magick_cmd, check=True, capture_output=True)
                         files_for_pdf.append(str(passthrough_path))
-                        if args.Verbose: print(f"  -> {r['original_path'].name} を再エンコード: {passthrough_path.name}")
                     except subprocess.CalledProcessError as e:
                         print(f"Warning: Failed to passthrough convert {r['original_path'].name}. It will be skipped. Error: {e}", file=sys.stderr)
                         skipped_files.append(r['original_path'])
@@ -362,21 +370,17 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
         if not files_for_pdf:
             raise ValueError("No image files were successfully prepared for the PDF.")
 
-        # --- PDFの作成 ---
-        # pdfcpu を使用して、選択された画像ファイルセットからPDFを作成します。
-        # 必要に応じてページサイズを設定し、PDFの最適化とビューア設定を行います。
+        # --------------------------------------------------------------------------
+        # 3.2. PDFの作成と最適化
+        # --------------------------------------------------------------------------
         print("Creating PDF...")
         archive_name = Path(archive_path).stem
         output_pdf_path = Path(archive_path).parent / f"{archive_name}.pdf"
         temp_pdf_path = temp_dir / "temp.pdf"
 
-        # pdfcpu import コマンドの構築
         pdfcpu_import_cmd = [tools['pdfcpu'], "import", "--"]
 
-        # SetPageSize 属性が存在するか確認
         if hasattr(args, 'SetPageSize') and args.SetPageSize:
-            # Determine the paper size string for pdfcpu.
-            # This logic mirrors the PowerShell version's $targetPaperSizeForPdfCpu
             if args.Height:
                 paper_size_for_cpu = "auto"
             else:
@@ -400,8 +404,8 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
         pdfcpu_import_cmd.extend(files_for_pdf)
 
         subprocess.run(pdfcpu_import_cmd, check=True, capture_output=True)
-        
-        # Set viewer preferences
+
+        # ビューア設定（タイトルバーにファイル名を表示）
         viewer_pref_json_path = temp_dir / "viewerpref.json"
         viewer_pref_json_path.write_text('{"DisplayDocTitle": true}', encoding="utf-8")
         try:
@@ -409,9 +413,11 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
         except subprocess.CalledProcessError as e:
             print(f"Warning: pdfcpu viewerpref set failed. Stderr: {e.stderr.decode(errors='ignore')}", file=sys.stderr)
 
+        # PDFの最適化
         print("Optimizing PDF...")
         subprocess.run([tools['pdfcpu'], "optimize", str(temp_pdf_path)], check=True, capture_output=True)
-        
+
+        # PDFのリニアライズ（ウェブ表示用に最適化）
         final_pdf_path = temp_pdf_path
         if args.Linearize and tools.get('qpdf'):
             print("Linearizing PDF with QPDF...")
@@ -420,82 +426,109 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
             final_pdf_path = linearized_pdf_path
         elif args.Linearize:
              print("Warning: --Linearize specified but QPDF not found. Skipping.", file=sys.stderr)
-        
-        shutil.move(str(final_pdf_path), str(output_pdf_path))
-        
-        source_stat = Path(archive_path).stat()
-        os.utime(output_pdf_path, (source_stat.st_atime, source_stat.st_mtime))
-        
+
+        # --------------------------------------------------------------------------
+        # 3.3. 最終PDFの移動とタイムスタンプ設定
+        # --------------------------------------------------------------------------
+        try:
+            shutil.move(str(final_pdf_path), str(output_pdf_path))
+            source_stat = Path(archive_path).stat()
+            os.utime(output_pdf_path, (source_stat.st_atime, source_stat.st_mtime))
+        except PermissionError:
+            print(f"\nWarning: Could not write to PDF file '{output_pdf_path}'.", file=sys.stderr)
+            print("The file may be open in another program (like a PDF viewer).", file=sys.stderr)
+            print("Please close the program and run the script again.", file=sys.stderr)
+            if log_file_path:
+                try:
+                    log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    import shlex
+                    command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv[1:])
+                    error_message = "Failed to write to output file because it was in use by another process."
+                    log_message = (
+                        f'Timestamp="{log_timestamp}" '
+                        f'Status="Failed" '
+                        f'Source="{os.path.basename(archive_path)}" '
+                        f'Output="{output_pdf_path}" '
+                        f'Error="{error_message}"'
+                    )
+                    full_log_content = [f"Command: {command_line}", log_message]
+                    with open(log_file_path, "a", encoding="utf-8") as f:
+                        f.write("\n".join(full_log_content) + "\n\n")
+                except Exception as log_e:
+                    print(f"Warning: Failed to write error to log file: {log_e}", file=sys.stderr)
+            return # この書庫の処理を中断して次に進む
+
         print(f"\nSuccess! PDF created at: {output_pdf_path}")
 
-        # --- ログの出力 ---
-        # 処理結果、使用した設定、スキップされたページなどの情報をログファイルに記録します。
-        # これにより、後からどのファイルがどの設定で変換されたかを確認できます。
-        if log_file_path:
-            try:
-                log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                import shlex
-                command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv[1:])
-                skipped_count = len(skipped_files)
-                status = "Success with pages skipped" if skipped_count > 0 else "Success"
+        # --------------------------------------------------------------------------
+# 3.4. ログの記録
+# --------------------------------------------------------------------------
+if log_file_path:
+    try:
+        log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv)
+        skipped_count = len(skipped_files)
+        status = "Success with pages skipped" if skipped_count > 0 else "Success"
 
-                settings_parts = []
-                if args.PaperSize: settings_parts.append(f"PaperSize:{args.PaperSize}")
-                if args.TotalCompressionThreshold is not None: settings_parts.append(f"TCR:{args.TotalCompressionThreshold}")
-                if args.Trim: settings_parts.append(f"Trim:True"); settings_parts.append(f"Fuzz:{args.Fuzz}")
-                if args.Deskew: settings_parts.append(f"Deskew:True")
-                if args.AutoContrast: settings_parts.append(f"AutoContrast:True")
-                elif args.ColorContrast: settings_parts.append(f"ColorContrast:{args.ColorContrast}")
-                if args.GrayscaleLevel: settings_parts.append(f"GrayscaleLevel:{args.GrayscaleLevel}")
-                if args.Linearize: settings_parts.append(f"Linearize:True")
-                if hasattr(args, 'SetPageSize') and args.SetPageSize:
-                    settings_parts.append(f"SetPageSize:True")
-                    if args.Landscape:
-                        settings_parts.append(f"Landscape:True")
-                settings_parts.append(f"Height:{target_height}px")
-                settings_parts.append(f"DPI:{target_dpi}")
-                settings_parts.append(f"Quality:{args.Quality}")
-                settings_parts.append(f"Saturation:{args.SaturationThreshold}")
-                settings_string = ", ".join(settings_parts)
+        settings_parts = []
+        if args.PaperSize: settings_parts.append(f"PaperSize:{args.PaperSize}")
+        if args.TotalCompressionThreshold is not None: settings_parts.append(f"TCR:{args.TotalCompressionThreshold}")
+        if args.Trim: settings_parts.append(f"Trim:True"); settings_parts.append(f"Fuzz:{args.Fuzz}")
+        if args.Deskew: settings_parts.append(f"Deskew:True")
+        if args.SplitPages: settings_parts.append(f"SplitPages:True"); settings_parts.append(f"Binding:{args.Binding}")
+        if args.AutoContrast: settings_parts.append(f"AutoContrast:True")
+        elif args.ColorContrast: settings_parts.append(f"ColorContrast:{args.ColorContrast}")
+        if args.GrayscaleLevel: settings_parts.append(f"GrayscaleLevel:{args.GrayscaleLevel}")
+        if args.Linearize: settings_parts.append(f"Linearize:True")
+        if hasattr(args, 'SetPageSize') and args.SetPageSize:
+            settings_parts.append(f"SetPageSize:True")
+            if args.Landscape:
+                settings_parts.append(f"Landscape:True")
+        settings_parts.append(f"Height:{target_height}px")
+        settings_parts.append(f"DPI:{target_dpi}")
+        settings_parts.append(f"Quality:{args.Quality}")
+        settings_parts.append(f"Saturation:{args.SaturationThreshold}")
+        settings_string = ", ".join(settings_parts)
 
-                log_message = (
-                    f'Timestamp="{log_timestamp}" '
-                    f'Status="{status}" '
-                    f'Source="{os.path.basename(archive_path)}" '
-                    f'Output="{output_pdf_path}" '
-                    f'Images={len(image_files)} '
-                    f'Converted={converted_count} '
-                    f'Originals={original_count} '
-                    f'Skipped={skipped_count} '
-                    f'Settings="{settings_string}"'
-                )
+        log_message = (
+            f'Timestamp="{log_timestamp}" '
+            f'Status="{status}" '
+            f'Source="{{os.path.basename(archive_path)}}" '
+            f'Output="{output_pdf_path}" '
+            f'Images={{len(image_files)}} '
+            f'Converted={converted_count} '
+            f'Originals={original_count} '
+            f'Skipped={skipped_count} '
+            f'Settings="{settings_string}"'
+        )
 
-                log_details = []
-                if not args.SkipCompression:
-                    for res in conversion_results:
-                        ratio_str = ""
-                        if res['original_size'] > 0:
-                            ratio = (res['converted_size'] / res['original_size'] * 100)
-                            ratio_str = f" (Ratio: {ratio:.2f} %)"
-                        log_status = "Converted" if use_converted else "Original"
-                        log_details.append(f"    - {res['original_path'].name}: {log_status}{ratio_str}")
-                
-                for skipped_file in skipped_files:
-                    log_details.append(f"    - {skipped_file.name}: SKIPPED (File conversion failed)")
+        log_details = []
+        if not args.SkipCompression:
+            for res in conversion_results:
+                ratio_str = ""
+                if res['original_size'] > 0:
+                    ratio = (res['converted_size'] / res['original_size'] * 100)
+                    ratio_str = f" (Ratio: {ratio:.2f} %)"
+                log_status = "Converted" if use_converted else "Original"
+                log_details.append(f"    - {res['original_path'].name}: {log_status}{ratio_str}")
+        
+        for skipped_file in skipped_files:
+            log_details.append(f"    - {skipped_file.name}: SKIPPED (File conversion failed)")
 
-                full_log_content = [f"Command: {command_line}", log_message] + log_details
-                with open(log_file_path, "a", encoding="utf-8") as f:
-                    f.write("\n".join(full_log_content) + "\n\n")
+        full_log_content = [f"Command: {command_line}", log_message] + log_details
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(full_log_content) + "\n\n")
 
-                if args.Verbose: print(f"Wrote log to: {log_file_path}")
-            except Exception as e:
-                print(f"Warning: Failed to write to log file: {e}", file=sys.stderr)
+        if args.Verbose: print(f"Wrote log to: {log_file_path}")
+    except Exception as e:
+        print(f"Warning: Failed to write to log file: {e}", file=sys.stderr)
 
     except Exception as e:
         print(f"Error processing {os.path.basename(archive_path)}: {e}", file=sys.stderr)
     finally:
         if args.Verbose: print(f"Cleaning up temporary directory: {temp_dir}")
         shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 def main():
     """
@@ -526,6 +559,8 @@ def main():
     parser.add_argument("-t", "--Trim", action="store_true", help="Trim margins.")
     parser.add_argument("--Fuzz", default="1%", help="Fuzz factor for --Trim. Default: 1%%") 
     parser.add_argument("-ds", "--Deskew", action="store_true", help="Deskew images.")
+    parser.add_argument("-sp", "--SplitPages", action="store_true", help="Split spread pages.")
+    parser.add_argument("-b", "--Binding", choices=['Right', 'Left'], default='Right', help="Binding direction for splitting. Default: Right")
     parser.add_argument("-gl", "--GrayscaleLevel", help="Level for grayscale contrast (e.g., '10%%,90%%').")
     parser.add_argument("-cc", "--ColorContrast", help="Value for color contrast (e.g., '0x25').")
     parser.add_argument("-ac", "--AutoContrast", action="store_true", help="Auto-adjust color contrast using normalize.")
@@ -612,6 +647,15 @@ def main():
                 fuzz_in = input(f"トリミングのFuzz値 [{args.Fuzz}]: ")
                 if fuzz_in: args.Fuzz = fuzz_in
 
+            split_in = input("見開きページを分割しますか (y/n)? [n]: ").lower()
+            if split_in == 'y':
+                args.SplitPages = True
+                binding_in = input("本の綴じ方向 (1=右綴じ(漫画など), 2=左綴じ) [1]: ")
+                if binding_in == '2':
+                    args.Binding = 'Left'
+                else:
+                    args.Binding = 'Right'
+
             linearize_in = input("PDFをウェブ用に最適化しますか (y/n)? [n]: ").lower()
             if linearize_in == 'y': args.Linearize = True
 
@@ -668,7 +712,7 @@ def main():
         print("--- Tool Paths ---")
         for tool, path in tools.items():
             if path: print(f"{tool}: {path}")
-        print("--------------------\n")
+        print("--------------------")
 
     resolved_files = []
     for pattern in args.archive_file_paths:
@@ -693,7 +737,7 @@ def main():
         print(f"--- Found {len(unique_files)} archives to process ---")
         for f in unique_files:
             print(f"  - {f}")
-        print("--------------------\n")
+        print("--------------------")
 
     target_height, target_dpi = calculate_target_height(args)
 
