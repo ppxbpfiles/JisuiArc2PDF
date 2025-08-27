@@ -165,11 +165,13 @@ foreach ($pdfPath in $resolvedFilePaths) {
     Write-Host "Processing: $($pdfInfo.Name)"
     Write-Host "========================================"
 
+    # 一時的な作業ディレクトリを生成
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
     New-Item -ItemType Directory -Path $tempDir | Out-Null
 
     try {
         # 1. PDFから画像を抽出
+        # pdfcpu extract コマンドを使い、PDF内の全ての画像を一時ディレクトリに書き出す。
         Write-Host "  -> Extracting images from PDF..."
         & $pdfcpu_exe extract -mode image "$($pdfInfo.FullName)" "$tempDir"
         if ($LASTEXITCODE -ne 0) {
@@ -177,17 +179,20 @@ foreach ($pdfPath in $resolvedFilePaths) {
         }
 
         # 2. 抽出されたファイルを確認
+        # 画像が1枚も抽出されなかった場合は、警告を表示して次のファイルの処理に進む。
         $extractedFiles = Get-ChildItem -Path $tempDir -Recurse -File
         if ($extractedFiles.Count -eq 0) {
             Write-Warning "No images found in or extracted from $($pdfInfo.Name). Skipping."
             continue
         }
 
-        # 3. ZIP書庫を作成 (出力先: ./pdf2arc_converted/)
+        # 3. ZIP書庫を作成
+        # 出力先として、スクリプトの実行場所に `pdf2arc_converted` フォルダがなければ作成する。
         $convertedOutputDir = Join-Path (Get-Location) "pdf2arc_converted"
         if (-not (Test-Path -Path $convertedOutputDir -PathType Container)) {
             New-Item -ItemType Directory -Path $convertedOutputDir | Out-Null
         }
+        # 7-Zipを使い、抽出された全てのファイルをZIP書庫に圧縮する。
         $zipFileName = $pdfInfo.BaseName + ".zip"
         $zipOutputPath = Join-Path $convertedOutputDir $zipFileName
         Write-Host "  -> Creating ZIP archive: $zipOutputPath"
@@ -201,6 +206,7 @@ foreach ($pdfPath in $resolvedFilePaths) {
         Write-Host "  -> Successfully created $zipFileName"
 
         # 4. ログへの書き込み
+        # 処理結果をログファイルに追記する。
         try {
             $logTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $commandLine = $MyInvocation.Line
@@ -222,6 +228,7 @@ foreach ($pdfPath in $resolvedFilePaths) {
         Write-Error $_.Exception.Message
     } finally {
         # 5. 一時フォルダをクリーンアップ
+        # 処理が成功しても失敗しても、必ず一時ファイルを削除する。
         if (Test-Path $tempDir) {
             Write-Verbose "Cleaning up temporary directory: $tempDir"
             Remove-Item -Path $tempDir -Recurse -Force

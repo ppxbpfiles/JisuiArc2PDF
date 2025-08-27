@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul
-REM ƒXƒNƒŠƒvƒg‚Ì‚ ‚éêŠ‚ÉˆÚ“®
+REM ã‚¹ã‚¯ãƒªãƒ—ãƒˆã®ã‚ã‚‹å ´æ‰€ã«ç§»å‹•
 cd /d "%~dp0"
 
-REM PowerShellƒXƒNƒŠƒvƒg‚ðŽÀs (ˆø”‚ð‚·‚×‚Ä“n‚·)
+REM PowerShellã‚¹ã‚¯ãƒªãƒ—ãƒˆã‚’å®Ÿè¡Œ (å¼•æ•°ã‚’ã™ã¹ã¦æ¸¡ã™)
 pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0\JisuiArc2PDF.ps1" %*
 
 echo.
-echo ˆ—‚ªŠ®—¹‚µ‚Ü‚µ‚½B‰½‚©ƒL[‚ð‰Ÿ‚·‚ÆƒEƒBƒ“ƒhƒE‚ð•Â‚¶‚Ü‚·B
+echo å‡¦ç†ãŒå®Œäº†ã—ã¾ã—ãŸã€‚ä½•ã‹ã‚­ãƒ¼ã‚’æŠ¼ã™ã¨ã‚¦ã‚£ãƒ³ãƒ‰ã‚¦ã‚’é–‰ã˜ã¾ã™ã€‚
 pause >nul

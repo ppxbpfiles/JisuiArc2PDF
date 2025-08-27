@@ -184,7 +184,16 @@ param(
     [switch]$AutoContrast,
 
     [Parameter(Mandatory=$false)]
-    [string]$LogPath
+    [string]$LogPath,
+
+    [Parameter(Mandatory=$false)]
+    [Alias('sp')]
+    [switch]$SplitPages,
+
+    [Parameter(Mandatory=$false)]
+    [Alias('b')]
+    [ValidateSet('Right', 'Left')]
+    [string]$Binding = 'Right'
 )
 
 # -SetPageSizeのデフォルト挙動を決定
@@ -265,8 +274,16 @@ if ($PSBoundParameters.Count -le 1 -and ($PSBoundParameters.Count -eq 0 -or $PSB
         $trim_in = Read-Host "余白除去 (y/n)? [n]"
         if ($trim_in.ToLower() -eq 'y') {
             $Trim = $true
-            $fuzz_in = Read-Host "Fuzz係数 (例: 1%) [1%]"
+            $fuzz_in = Read-Host "Fuzz係数 (例: 1%) [1% ]"
             if (-not ([string]::IsNullOrWhiteSpace($fuzz_in))) { $Fuzz = $fuzz_in }
+        }
+
+        $split_in = Read-Host "見開きページを分割しますか (y/n)? [n]"
+        if ($split_in.ToLower() -eq 'y') {
+            $SplitPages = $true
+            $binding_in = Read-Host "本の綴じ方向 (1=右綴じ(漫画など), 2=左綴じ) [1]"
+            if ($binding_in -eq '2') { $Binding = 'Left' }
+            else { $Binding = 'Right' }
         }
 
         $linearize_in = Read-Host "PDFをリニアライズしますか (y/n)? [n]"
@@ -440,8 +457,17 @@ if ($ArchiveFilePaths.Count -eq 0) {
 }
 # ==============================================================================
 
+# ==============================================================================
+# 0. 前提ツールのパス解決
+# ==============================================================================
+# スクリプトの実行に必要な外部ツール（7z, magick, pdfcpu, qpdf）の実行ファイルパスを解決します。
+# 検索の優先順位:
+# 1. ユーザーが引数で明示的に指定したパス (例: -SevenZipPath "C:\...")
+# 2. スクリプト(.ps1)と同一ディレクトリに配置されている実行ファイル
+# 3. 環境変数PATHが通っている場所
+# 4. (最終手段) Get-Command コマンドレットでの検索
+
 # 0. 前提ツールのパス解決と存在チェック
-# (このセクションは変更ありません)
 $sevenzip_exe = $null
 if ($PSBoundParameters.ContainsKey('SevenZipPath') -and (Test-Path -LiteralPath $SevenZipPath -PathType Leaf)) {
     $sevenzip_exe = $SevenZipPath
@@ -525,7 +551,6 @@ if (Test-Path -LiteralPath $localExePath -PathType Leaf) {
 if (-not $magick_exe) { Write-Error "ImageMagick (magick.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。"; exit 1 }
 if (-not $sevenzip_exe) { Write-Error "7-Zip (7z.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。"; exit 1 }
 if (-not $pdfcpu_exe) { Write-Error "PDFCPU (pdfcpu.exe) が見つかりません。パスを指定するか、環境変数PATHに登録してください。"; exit 1 }
-# (以下、メインの処理ループ。変更なし)
 
 foreach ($ArchiveFilePath in $ArchiveFilePaths) {
     Write-Output "[診断] メインループ開始: $ArchiveFilePath"
@@ -580,10 +605,80 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             $mangledName
         }}
 
+        # --------------------------------------------------------------------------
+        # 2. 見開きページの分割 (オプション)
+        # --------------------------------------------------------------------------
+        # -SplitPages スイッチが指定されている場合、横長の画像を見開きページと見なして分割する。
+        if ($SplitPages.IsPresent) {
+            Write-Host "[情報] 見開きページを分割します (綴じ方向: $Binding)..."
+            $processedFiles = @()
+            $splitTempDir = Join-Path $tempDir "split_pages"
+            New-Item -ItemType Directory -Path $splitTempDir | Out-Null
+            
+            $pageCounter = 0
+            foreach ($file in $imageFiles) {
+                try {
+                    # 画像の幅と高さを取得
+                    $dimensions = & $magick_exe identify -format "%w %h" "$($file.FullName)"
+                    $dimArray = $dimensions -split ' '
+                    $width = [int]$dimArray[0]
+                    $height = [int]$dimArray[1]
+
+                    # 幅が高さの1.2倍より大きい場合、見開きページと判断して分割
+                    if ($width -gt ($height * 1.2)) {
+                        Write-Host "  -> 分割中: $($file.Name) (${width}x${height})"
+                        
+                        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+                        
+                        # 分割後の左右のページファイルパスを定義
+                        $leftPagePath = Join-Path $splitTempDir ("{0:D4}_{1}_1_left.jpg" -f $pageCounter, $baseName)
+                        $rightPagePath = Join-Path $splitTempDir ("{0:D4}_{1}_2_right.jpg" -f $pageCounter, $baseName)
+                        
+                        # ImageMagickのcrop機能で画像を左右に50%ずつ分割
+                        $cropArgsLeft = @("$($file.FullName)", "-crop", "50%x100%+0+0", "+repage", "$leftPagePath")
+                        & $magick_exe @cropArgsLeft
+                        $cropArgsRight = @("$($file.FullName)", "-crop", "50%x100%+$([int]($width/2))+0", "+repage", "$rightPagePath")
+                        & $magick_exe @cropArgsRight
+
+                        if (Test-Path $leftPagePath) {
+                            if (Test-Path $rightPagePath) {
+                                # -Binding の値に応じて、PDFに格納するページの順序を決定
+                                if ($Binding -eq 'Right') { # 右綴じ(漫画など): 右ページが先
+                                    $processedFiles += Get-Item -LiteralPath $rightPagePath
+                                    $processedFiles += Get-Item -LiteralPath $leftPagePath
+                                } else { # 左綴じ: 左ページが先
+                                    $processedFiles += Get-Item -LiteralPath $leftPagePath
+                                    $processedFiles += Get-Item -LiteralPath $rightPagePath
+                                }
+                            } else {
+                                Write-Warning "ページの分割に失敗しました: $($file.Name)。このページはスキップされます。"
+                            }
+                        } else {
+                            Write-Warning "ページの分割に失敗しました: $($file.Name)。このページはスキップされます。"
+                        }
+                    } else {
+                        # 見開きではない場合、元のファイルをそのままリストに追加
+                        $processedFiles += $file
+                    }
+                } catch {
+                    Write-Warning "画像の寸法取得または分割中にエラーが発生しました: $($file.Name) - $($_.Exception.Message)。このページはスキップされます。"
+                }
+                $pageCounter++
+            }
+            # 元の画像リストを、分割処理後の新しいリストで上書きする
+            $imageFiles = $processedFiles
+        }
+
         if ($imageFiles.Count -eq 0) { throw "アーカイブ内に処理可能な画像ファイルが見つかりませんでした。" }
         
+        # --------------------------------------------------------------------------
+        # 3. 画像ファイルの処理とPDF化
+        # --------------------------------------------------------------------------
         $filesForPdf = @()
 
+        # A. 圧縮スキップモード
+        # -SkipCompression が指定された場合、最適化（リサイズ、品質調整等）を行わず、
+        #   非JPEGファイルをJPEGに変換するだけの最小限の処理を行う。
         if ($SkipCompression.IsPresent) {
             Write-Host "[情報] -SkipCompression: 最適化をスキップし、非JPEGファイルをJPEGに変換します。"
             $jpegExtensions = @('.jpg', '.jpeg', '.jfif', '.jpe')
@@ -594,10 +689,12 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             foreach ($file in $imageFiles) {
                 $extension = [System.IO.Path]::GetExtension($file.FullName).ToLower()
                 if ($jpegExtensions -contains $extension) {
+                    # 元からJPEGの場合は何もしない
                     $filesForPdf += $file.FullName
                     $logDetails += "    - $($file.Name): Original (JPEG passthrough)"
                     Write-Verbose "  -> $($file.Name): JPEGのため変換不要。"
                 } else {
+                    # 非JPEGファイルはJPEGに変換する
                     if (-not (Test-Path $tempDirScPassthrough)) { New-Item -ItemType Directory -Path $tempDirScPassthrough | Out-Null }
                     $newFileName = "{0:D4}.jpg" -f $fileCounter
                     $passthroughPath = Join-Path $tempDirScPassthrough $newFileName
@@ -618,18 +715,24 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             $originalCount = $imageFiles.Count - $skippedFiles.Count
             $convertedCount = 0
         }
+        # B. 通常の変換モード
         else {
             Write-Host "画像を変換し、一時ファイルに保存しています..."
             $fileCounter = 0
+            # 変換結果（元ファイルと変換後ファイルのサイズなど）を格納する配列
             $conversionResults = @()
 
+            # 全ての画像ファイルをループして変換処理を行う
             foreach ($file in $imageFiles) {
                 Write-Host "ファイル処理中: $($file.Name)"
+
+                # 画像の彩度を取得し、グレースケールかカラーかを判断
                 $SATURATION_STR = & $magick_exe "$($file.FullName)" -colorspace HSL -channel G -separate +channel -format "%[mean]" info:
                 $SATURATION = [double]$SATURATION_STR / 65535.0
                 $newFileName = "{0:D4}.jpg" -f $fileCounter
 
                 try {
+                    # 画像の高さを取得
                     $originalHeightStr = & $magick_exe identify -format "%h" "$($file.FullName)"
                     if ($originalHeightStr -match '^\d+') {
                         $originalHeight = [int]$originalHeightStr
@@ -640,10 +743,12 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                     Write-Warning "identifyの実行中にエラーが発生しました: $($file.Name) - $($_.Exception.Message)"; $skippedFiles += $file; $fileCounter++; continue
                 }
 
+                # ImageMagickに渡す引数を動的に構築していく
                 $magickArgs = @("$($file.FullName)")
                 if ($Deskew.IsPresent) { $magickArgs += "-deskew", "40%"; Write-Host "  -> 傾きを補正します。" }
                 if ($Trim.IsPresent) { $magickArgs += "-fuzz", $Fuzz, "-trim", "+repage"; Write-Host "  -> 余白を除去します (Fuzz: $Fuzz)。" }
 
+                # 目標の高さより大きい画像のみリサイズする
                 if ($targetHeight -gt 0 -and $originalHeight -ge $targetHeight) {
                     $magickArgs += "-resize", "x$targetHeight"
                     Write-Host "  -> 画像をリサイズします (${originalHeight}px -> ${targetHeight}px)。"
@@ -653,6 +758,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
 
                 $magickArgs += "-density", $targetDpi, "-quality", $Quality
 
+                # 彩度のしきい値に基づいて、グレースケールかカラーかを判断し、それぞれの処理を追加
                 if ($SATURATION -lt $SaturationThreshold) {
                     Write-Host "  -> グレースケールを検出しました。ファイル名: $newFileName";
                     $destinationPath = Join-Path $tempDirConvertedGray $newFileName
@@ -667,12 +773,14 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 }
                 $magickArgs += "$destinationPath"
 
+                # ImageMagickコマンドを実行
                 & $magick_exe @magickArgs
                 
                 if (-not (Test-Path $destinationPath)) {
                     Write-Warning "変換後ファイルが見つかりません: $destinationPath。このページはスキップされます。"; $skippedFiles += $file; $fileCounter++; continue
                 }
 
+                # 後のファイルサイズ比較のために、変換結果をオブジェクトとして保存
                 $conversionResults += [pscustomobject]@{ 
                     FileObject = $file; FileName = $file.Name; OriginalPath = $file.FullName; OriginalSize = $file.Length
                     ConvertedPath = $destinationPath; ConvertedSize = (Get-Item -Path $destinationPath).Length; Saturation = $SATURATION
@@ -683,6 +791,10 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             if ($conversionResults.Count -eq 0 -and $skippedFiles.Count -gt 0) { throw "全ての画像ファイルの変換に失敗しました。" }
             if ($conversionResults.Count -eq 0) { throw "処理可能な画像ファイルが変換されませんでした。" }
 
+            # --------------------------------------------------------------------------
+            # 3.1. ファイルサイズの比較と採用判断
+            # --------------------------------------------------------------------------
+            # 元の画像セットと変換後の画像セットの合計ファイルサイズを比較し、どちらをPDFに使用するかを決定する。
             $totalOriginalSize = ($conversionResults | Measure-Object -Property OriginalSize -Sum).Sum
             $totalConvertedSize = ($conversionResults | Measure-Object -Property ConvertedSize -Sum).Sum
             $totalOriginalSizeMB = [math]::Round($totalOriginalSize / 1MB, 2)
@@ -691,6 +803,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             Write-Host "[比較] 変換後ファイル合計サイズ: $totalConvertedSize bytes (${totalConvertedSizeMB} MB)"
 
             $useConvertedFiles = $false
+            # -TotalCompressionThreshold が指定されている場合、そのしきい値に基づいて判断
             if ($PSBoundParameters.ContainsKey('TotalCompressionThreshold')) {
                 if ($totalOriginalSize -gt 0) {
                     $ratio = ($totalConvertedSize / $totalOriginalSize) * 100
@@ -698,7 +811,9 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                     if ($ratio -lt $TotalCompressionThreshold) { $useConvertedFiles = $true }
                 }
             } else {
-                if ($totalOriginalSize -eq 0) { $useConvertedFiles = $true }
+                # デフォルトの動作: 変換によってファイルサイズが2%以上増加しない限り、変換後のファイルを使用する。
+                # これにより、リサイズ等のメリットを享受しつつ、ファイルサイズが極端に増えるのを防ぐ。
+                if ($totalOriginalSize -eq 0) { $useConvertedFiles = $true } # ゼロ除算を避ける
                 elseif (($totalConvertedSize / [double]$totalOriginalSize) -lt 1.02) { $useConvertedFiles = $true }
             }
 
@@ -706,6 +821,8 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 Write-Host "[判断] 変換後ファイルの方が小さいため、変換後の画像を使用します。"
                 $filesForPdf = $conversionResults.ConvertedPath; $convertedCount = $conversionResults.Count; $originalCount = 0
             } else {
+                # 元ファイルを使用する場合でも、PDF非互換形式(PNG, WEBP等)や、
+                # 補正(-Deskew, -Trim等)を適用するために、JPEGとして再エンコード（パススルー処理）を行う。
                 Write-Host "[判断] 元ファイルの方が小さいか、圧縮率がしきい値に満たなかったため、元の画像を使用します。"
                 Write-Host "[情報] 元ファイルをPDF互換のJPEG形式に変換しています..."
                 $tempDirOriginalsPassthrough = Join-Path $tempDir "originals_passthrough"
@@ -736,6 +853,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 Remove-Item -Path $tempDirConverted -Recurse -Force
             }
 
+            # ログ用の詳細メッセージを作成
             foreach ($result in $conversionResults) {
                 if ($skippedFiles.FullName -contains $result.OriginalPath) { continue }
                 $logMessageDetail = ""
@@ -751,11 +869,15 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
 
         if ($filesForPdf.Count -eq 0) { throw "PDFに変換する画像ファイルが見つかりませんでした。全てのページの処理に失敗した可能性があります。" }
         
+        # --------------------------------------------------------------------------
+        # 3.2. PDFの作成と最適化
+        # --------------------------------------------------------------------------
         $pdfName = $archiveFileInfo.BaseName + ".pdf"
         $tempPdfOutputPath = Join-Path $tempDir "temp.pdf"
         $pdfOutputPath = Join-Path $archiveFileInfo.DirectoryName $pdfName
         Write-Host "PDFを作成しています: $pdfOutputPath";
 
+        # pdfcpuに渡す引数を構築。ページサイズ設定などをここで行う。
         $importArgs = @('import', '--')
 
         if ($SetPageSize.IsPresent) {
@@ -766,8 +888,10 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
 
             $pdfcpuPageConf = ""
             if ($targetPaperSizeForPdfCpu -eq 'auto') {
+                # 画像の寸法に合わせてページサイズを自動調整
                 $pdfcpuPageConf = "dim:auto"
             } else {
+                # 指定された用紙サイズに、中央寄せで画像を配置
                 $pdfcpuPageConf = "f:$pageSizeString, pos:c, sc:1 rel"
             }
             Write-Host "[情報] PDFページ設定を試行: $pdfcpuPageConf"
@@ -781,15 +905,18 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         & $pdfcpu_exe @importArgs
         if (-not (Test-Path $tempPdfOutputPath)) { throw "一時PDFファイルが作成されませんでした: $tempPdfOutputPath" }
 
+        # PDFのビューア設定（ファイルを開いたときにウィンドウタイトルにファイル名を表示する）
         $jsonContent = '{"DisplayDocTitle": true}'
         $tempJsonPath = Join-Path $tempDir "viewerpref.json"
         $jsonContent | Out-File -FilePath $tempJsonPath -Encoding utf8
         & $pdfcpu_exe viewerpref set $tempPdfOutputPath $tempJsonPath *>$null
 
+        # PDFのファイルサイズを最適化
         Write-Host "[情報] PDFを最適化しています..."
         & $pdfcpu_exe optimize $tempPdfOutputPath *>$null
 
         $finalTempPdfPath = $tempPdfOutputPath
+        # -Linearize が指定され、かつqpdf.exeが見つかった場合、ウェブ表示用に最適化（リニアライズ）する
         if ($Linearize.IsPresent) {
             if ($qpdf_exe) {
                 Write-Host "[情報] PDFをリニアライズ（ウェブ最適化）しています（QPDFを使用）..."
@@ -803,17 +930,50 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         }
 
         try {
+            # 完成した一時PDFファイルを、最終的な出力先に移動
             Move-Item -Path $finalTempPdfPath -Destination $pdfOutputPath -Force -ErrorAction Stop
         } catch [System.IO.IOException] {
             Write-Warning "PDFファイル '$pdfOutputPath' の書き込みに失敗しました。"
             Write-Warning "ファイルが他のプログラム（PDFビューアなど）で開かれている可能性があります。"
             Write-Warning "プログラムを閉じてから、再度スクリプトを実行してください。"
+            
+            # ログに失敗を記録
+            try {
+                $logTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                $scriptPathForLog = $MyInvocation.MyCommand.Path
+                $argList = New-Object System.Collections.Generic.List[string]
+                $PSBoundParameters['ArchiveFilePaths'] | ForEach-Object { $argList.Add(('"' + $_ + '"')) }
+                $PSBoundParameters.GetEnumerator() | Sort-Object Key | ForEach-Object {
+                    if ($_.Key -ne 'ArchiveFilePaths') {
+                        if ($_.Value -is [switch]) { if ($_.Value.IsPresent) { $argList.Add("-$($_.Key)") } }
+                        else { $argList.Add("-$($_.Key)"); $argList.Add(('"' + $_.Value + '"')) }
+                    }
+                }
+                if (-not $PSBoundParameters.ContainsKey('Quality')) { $argList.Add("-Quality `"$Quality`"") }
+                if (-not $PSBoundParameters.ContainsKey('SaturationThreshold')) { $argList.Add("-SaturationThreshold `"$SaturationThreshold`"") }
+                if (-not $PSBoundParameters.ContainsKey('Dpi') -and $Dpi) { $argList.Add("-Dpi `"$Dpi`"") }
+                if (-not $PSBoundParameters.ContainsKey('PaperSize') -and $PaperSize -and $PaperSize -ne "Custom") { $argList.Add("-PaperSize `"$PaperSize`"") }
+                if (-not $PSBoundParameters.ContainsKey('Height') -and $Height) { $argList.Add("-Height `"$Height`"") }
+                $commandLine = "pwsh -File `"$scriptPathForLog`" $($argList -join ' ')"
+
+                $errorMessage = "出力先PDFファイルが使用中などの理由で、書き込みに失敗しました。"
+                $logMessage = "Timestamp=`"$logTimestamp`" Status=`"Failed`" Source=`"$($archiveFileInfo.Name)`" Output=`"$pdfOutputPath`" Error=`"$errorMessage`""
+                $logBlock = @"
+Command: $commandLine
+$logMessage
+"@
+                $logBlock | Add-Content -Path $logFilePath -Encoding utf8
+                "`n" | Add-Content -Path $logFilePath -Encoding utf8
+            } catch {
+                Write-Warning "失敗ログの書き込み中にエラーが発生しました: $($_.Exception.Message)"
+            }
             continue 
         } catch {
             Write-Error "PDFファイルの移動中に予期せぬエラーが発生しました: $($_.Exception.Message)"
             continue
         }
 
+        # 元の書庫ファイルのタイムスタンプを、作成したPDFに継承させる
         $archiveLastWriteTime = $archiveFileInfo.LastWriteTime
         $archiveCreationTime = $archiveFileInfo.CreationTime
         [System.IO.File]::SetLastWriteTime($pdfOutputPath, $archiveLastWriteTime)
@@ -824,7 +984,11 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
         Write-Host $pdfOutputPath
         Write-Host "----------------------------------------"
 
+        # --------------------------------------------------------------------------
+        # 3.3. ログの記録
+        # --------------------------------------------------------------------------
         try {
+            # 実行時のコマンドラインを再現して記録
             $logTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $scriptPathForLog = $MyInvocation.MyCommand.Path
             $argList = New-Object System.Collections.Generic.List[string]
@@ -842,6 +1006,7 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             if (-not $PSBoundParameters.ContainsKey('Height') -and $Height) { $argList.Add("-Height `"$Height`"") }
             $commandLine = "pwsh -File `"$scriptPathForLog`" $($argList -join ' ')"
             
+            # 実行結果のサマリーを作成
             $skippedCount = if($skippedFiles) { $skippedFiles.Count } else { 0 }
             $status = if ($skippedCount -gt 0) { "Success with pages skipped" } else { "Success" }
             $settingsParts = @()
@@ -849,14 +1014,17 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             if ($PSBoundParameters.ContainsKey('TotalCompressionThreshold')) { $settingsParts += "TCR:$($TotalCompressionThreshold)" }
             if ($Trim.IsPresent) { $settingsParts += "Trim:$($Trim.IsPresent)"; $settingsParts += "Fuzz:$($Fuzz)" }
             if ($Deskew.IsPresent) { $settingsParts += "Deskew:$($Deskew.IsPresent)" }
+            if ($SplitPages.IsPresent) { $settingsParts += "SplitPages:True"; $settingsParts += "Binding:$($Binding)" }
             if ($AutoContrast.IsPresent) { $settingsParts += "AutoContrast:True" }
             elseif ($PSBoundParameters.ContainsKey('ColorContrast')) { $settingsParts += "ColorContrast:$($ColorContrast)" }
             if ($PSBoundParameters.ContainsKey('GrayscaleLevel')) { $settingsParts += "GrayscaleLevel:$($GrayscaleLevel)" }
             if ($Linearize.IsPresent) { $settingsParts += "Linearize:True" }
+            if ($SetPageSize) { $settingsParts += "SetPageSize:True"; if ($Landscape) { $settingsParts += "Landscape:True" } }
             if ($SkipCompression.IsPresent) { $settingsParts += "SkipCompression:True" }
             $settingsParts += "Height:${targetHeight}px"; $settingsParts += "DPI:${targetDpi}"; $settingsParts += "Quality:${Quality}"; $settingsParts += "Saturation:${SaturationThreshold}"
             $settingsString = $settingsParts -join ', '
 
+            # 最終的なログメッセージを組み立ててファイルに追記
             $logMessage = "Timestamp=`"$logTimestamp`" Status=`"$status`" Source=`"$($archiveFileInfo.Name)`" Output=`"$pdfOutputPath`" Images=$($imageFiles.Count) Converted=$convertedCount Originals=$originalCount Skipped=$skippedCount Settings=`"$settingsString`""
             $logBlock = @"
 Command: $commandLine
