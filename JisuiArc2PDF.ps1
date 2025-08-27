@@ -942,7 +942,8 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
                 $logTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 $scriptPathForLog = $MyInvocation.MyCommand.Path
                 $argList = New-Object System.Collections.Generic.List[string]
-                $PSBoundParameters['ArchiveFilePaths'] | ForEach-Object { $argList.Add(('"' + $_ + '"')) }
+                $argList.Add(('"' + $ArchiveFilePath + '"'))
+
                 $PSBoundParameters.GetEnumerator() | Sort-Object Key | ForEach-Object {
                     if ($_.Key -ne 'ArchiveFilePaths') {
                         if ($_.Value -is [switch]) { if ($_.Value.IsPresent) { $argList.Add("-$($_.Key)") } }
