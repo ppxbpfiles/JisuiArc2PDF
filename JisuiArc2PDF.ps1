@@ -193,17 +193,21 @@ param(
     [Parameter(Mandatory=$false)]
     [Alias('b')]
     [ValidateSet('Right', 'Left')]
-    [string]$Binding = 'Right'
+    [string]$Binding = 'Right',
+
+    [Parameter(Mandatory=$false)]
+    [switch]$SetPageSize,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$Landscape
 )
 
 # -SetPageSizeのデフォルト挙動を決定
-if (-not $PSBoundParameters.ContainsKey('SetPageSize')) {
-    if ($PSBoundParameters.ContainsKey('PaperSize')) {
-        # -PaperSizeが指定されたら、ページサイズ設定をデフォルトで有効にする
-        $SetPageSize = $true
-    }
-    # -Heightのみ、または何も指定されない場合は、デフォルトで無効のまま ($SetPageSizeは$falseのまま)
+# -PaperSizeが指定された場合、PDFのページサイズもその用紙サイズに設定するのをデフォルトで有効にする
+if ($PSBoundParameters.ContainsKey('PaperSize')) {
+    $SetPageSize = $true
 }
+# -Heightのみ、または何も指定されない場合は、デフォルトで無効 ($SetPageSizeは$falseのまま)
 
 # ==============================================================================
 # 対話モードでのパラメータ入力
@@ -433,7 +437,7 @@ Write-Verbose "[診断] スクリプト開始。受信した引数: $($ArchiveFi
 $resolvedFilePaths = @()
 foreach ($rawPath in $ArchiveFilePaths) {
     # パスに含まれる角括弧をエスケープして、ワイルドカードとして誤認識されるのを防ぐ
-    $escapedPath = $rawPath -replace '\[', '`[' -replace '\]', '`]'
+    $escapedPath = $rawPath -replace '\[', '`[' -replace ']', '`]' -replace '\[', '`[' -replace ']', '`]'
     try {
         $items = Resolve-Path -Path $escapedPath -ErrorAction Stop
         foreach ($item in $items) {
@@ -594,13 +598,18 @@ foreach ($ArchiveFilePath in $ArchiveFilePaths) {
             }
         }
 
-        $imageFiles = $imageFiles | Sort-Object -Property @{Expression={ 
+        $imageFiles = $imageFiles | Sort-Object -Property @{Expression={
             $mangledName = ''
             $parts = $_.Name -split '(\d+)'
             foreach ($part in $parts) {
                 if ([string]::IsNullOrEmpty($part)) { continue }
-                if ($part -match '^\d+$') { $mangledName += $part.PadLeft(20, '0') }
-                else { $mangledName += $part }
+                if ($part -match '^\d+$') { 
+                    $mangledName += $part.PadLeft(20, '0') 
+                }
+                else {
+                    # Python版と同様に、非数字部分から記号を除去する
+                    $mangledName += $part -replace '[-_@#]'
+                }
             }
             $mangledName
         }}
