@@ -380,7 +380,7 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
 
         pdfcpu_import_cmd = [tools['pdfcpu'], "import", "--"]
 
-        if hasattr(args, 'SetPageSize') and args.SetPageSize:
+        if args.SetPageSize:
             if args.Height:
                 paper_size_for_cpu = "auto"
             else:
@@ -441,7 +441,40 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
             if log_file_path:
                 try:
                     log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv)
+                    
+                    # コマンドラインの再構築
+                    script_name = os.path.basename(sys.argv[0])
+                    arg_list = [shlex.quote(archive_path)]
+                    
+                    # argsオブジェクトから引数を復元
+                    if args.SevenZipPath: arg_list.extend(['--SevenZipPath', shlex.quote(args.SevenZipPath)])
+                    if args.MagickPath: arg_list.extend(['--MagickPath', shlex.quote(args.MagickPath)])
+                    if args.PdfCpuPath: arg_list.extend(['--PdfCpuPath', shlex.quote(args.PdfCpuPath)])
+                    if args.QpdfPath: arg_list.extend(['--QpdfPath', shlex.quote(args.QpdfPath)])
+                    if args.Quality != 85: arg_list.extend(['-q', str(args.Quality)])
+                    if args.SaturationThreshold != 0.05: arg_list.extend(['-s', str(args.SaturationThreshold)])
+                    if args.TotalCompressionThreshold is not None: arg_list.extend(['-tcr', str(args.TotalCompressionThreshold)])
+                    if args.Height: arg_list.extend(['-H', str(args.Height)])
+                    if args.Dpi: arg_list.extend(['-d', str(args.Dpi)])
+                    if args.PaperSize: arg_list.extend(['-p', args.PaperSize])
+                    if args.SkipCompression: arg_list.append('-sc')
+                    if args.Trim: arg_list.append('-t')
+                    if args.Trim and args.Fuzz != "1%": arg_list.extend(['--Fuzz', shlex.quote(args.Fuzz)])
+                    if args.Deskew: arg_list.append('-ds')
+                    if args.SplitPages: arg_list.append('-sp')
+                    if args.SplitPages and args.Binding != 'Right': arg_list.extend(['-b', args.Binding])
+                    if args.GrayscaleLevel: arg_list.extend(['-gl', shlex.quote(args.GrayscaleLevel)])
+                    if args.ColorContrast: arg_list.extend(['-cc', shlex.quote(args.ColorContrast)])
+                    if args.AutoContrast: arg_list.append('-ac')
+                    if args.Linearize: arg_list.append('-lin')
+                    if args.SetPageSize: arg_list.append('--SetPageSize')
+                    elif args.SetPageSize is False: arg_list.append('--no-SetPageSize')
+                    if args.Landscape: arg_list.append('--Landscape')
+                    if args.LogPath: arg_list.extend(['--LogPath', shlex.quote(args.LogPath)])
+                    if args.Verbose: arg_list.append('-v')
+
+                    command_line = f"python {shlex.quote(script_name)} {' '.join(arg_list)}"
+
                     error_message = "Failed to write to output file because it was in use by another process."
                     log_message = (
                         f'Timestamp="{log_timestamp}" '
@@ -465,7 +498,40 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
         if log_file_path:
             try:
                 log_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                command_line = "python " + " ".join(shlex.quote(arg) for arg in sys.argv)
+                
+                # コマンドラインの再構築
+                script_name = os.path.basename(sys.argv[0])
+                arg_list = [shlex.quote(archive_path)]
+                
+                # argsオブジェクトから引数を復元
+                if args.SevenZipPath: arg_list.extend(['--SevenZipPath', shlex.quote(args.SevenZipPath)])
+                if args.MagickPath: arg_list.extend(['--MagickPath', shlex.quote(args.MagickPath)])
+                if args.PdfCpuPath: arg_list.extend(['--PdfCpuPath', shlex.quote(args.PdfCpuPath)])
+                if args.QpdfPath: arg_list.extend(['--QpdfPath', shlex.quote(args.QpdfPath)])
+                if args.Quality != 85: arg_list.extend(['-q', str(args.Quality)])
+                if args.SaturationThreshold != 0.05: arg_list.extend(['-s', str(args.SaturationThreshold)])
+                if args.TotalCompressionThreshold is not None: arg_list.extend(['-tcr', str(args.TotalCompressionThreshold)])
+                if args.Height: arg_list.extend(['-H', str(args.Height)])
+                if args.Dpi: arg_list.extend(['-d', str(args.Dpi)])
+                if args.PaperSize: arg_list.extend(['-p', args.PaperSize])
+                if args.SkipCompression: arg_list.append('-sc')
+                if args.Trim: arg_list.append('-t')
+                if args.Trim and args.Fuzz != "1%": arg_list.extend(['--Fuzz', shlex.quote(args.Fuzz)])
+                if args.Deskew: arg_list.append('-ds')
+                if args.SplitPages: arg_list.append('-sp')
+                if args.SplitPages and args.Binding != 'Right': arg_list.extend(['-b', args.Binding])
+                if args.GrayscaleLevel: arg_list.extend(['-gl', shlex.quote(args.GrayscaleLevel)])
+                if args.ColorContrast: arg_list.extend(['-cc', shlex.quote(args.ColorContrast)])
+                if args.AutoContrast: arg_list.append('-ac')
+                if args.Linearize: arg_list.append('-lin')
+                if args.SetPageSize: arg_list.append('--SetPageSize')
+                elif args.SetPageSize is False: arg_list.append('--no-SetPageSize')
+                if args.Landscape: arg_list.append('--Landscape')
+                if args.LogPath: arg_list.extend(['--LogPath', shlex.quote(args.LogPath)])
+                if args.Verbose: arg_list.append('-v')
+
+                command_line = f"python {shlex.quote(script_name)} {' '.join(arg_list)}"
+
                 skipped_count = len(skipped_files)
                 status = "Success with pages skipped" if skipped_count > 0 else "Success"
 
@@ -479,10 +545,11 @@ def process_archive(archive_path: str, args: argparse.Namespace, tools: dict, lo
                 elif args.ColorContrast: settings_parts.append(f"ColorContrast:{args.ColorContrast}")
                 if args.GrayscaleLevel: settings_parts.append(f"GrayscaleLevel:{args.GrayscaleLevel}")
                 if args.Linearize: settings_parts.append(f"Linearize:True")
-                if hasattr(args, 'SetPageSize') and args.SetPageSize:
+                if args.SetPageSize:
                     settings_parts.append(f"SetPageSize:True")
                     if args.Landscape:
                         settings_parts.append(f"Landscape:True")
+                if args.SkipCompression: settings_parts.append("SkipCompression:True")
                 settings_parts.append(f"Height:{target_height}px")
                 settings_parts.append(f"DPI:{target_dpi}")
                 settings_parts.append(f"Quality:{args.Quality}")
@@ -567,13 +634,20 @@ def main():
     parser.add_argument("-tcr", "--TotalCompressionThreshold", type=float, help="Threshold to decide whether to use converted files.")
     parser.add_argument("--LogPath", help="Path for logging.")
     parser.add_argument("-v", "--Verbose", action="store_true", help="Enable verbose output.")
+    # Python 3.9+ が必要
+    parser.add_argument('--SetPageSize', action=argparse.BooleanOptionalAction, default=None, help="Set PDF page size based on other settings. Default is auto-enabled with --PaperSize.")
+    parser.add_argument('--Landscape', action='store_true', help="Set page orientation to landscape (used with --SetPageSize).")
     
     args = parser.parse_args()
 
-    # --- 条件付きデフォルトロジック ---
-    # PaperSizeが指定され、かつSetPageSizeが明示的にFalseでない場合、デフォルトでページサイズを設定する。
-    if ('--PaperSize' in sys.argv or '-p' in sys.argv) and '--SetPageSize' not in sys.argv:
-        args.SetPageSize = True
+    # --- SetPageSize のデフォルト値決定ロジック ---
+    if args.SetPageSize is None: # ユーザーが明示的に指定していない場合
+        if args.PaperSize:
+            # PaperSizeが指定されていれば、ページサイズ設定をデフォルトで有効にする
+            args.SetPageSize = True
+        else:
+            # Heightのみ、または何も指定されない場合は、デフォルトで無効
+            args.SetPageSize = False
 
     # ユーザーがオプション引数を指定したかどうかを確認します。
     # これにより、対話モードに入るかどうかを判断します。
@@ -664,11 +738,34 @@ def main():
                 if height_in: args.Height = int(height_in)
                 dpi_for_h_in = input("DPI [144]: ")
                 if dpi_for_h_in: args.Dpi = int(dpi_for_h_in)
-            else:
+                
+                # 高さ指定の場合、デフォルトは「自動」
+                ps_prompt = "PDFページサイズ設定 (1:自動, 2:縦向きで設定, 3:横向きで設定) [1]: "
+                ps_choice = input(ps_prompt)
+                if ps_choice == '2':
+                    args.SetPageSize = True
+                elif ps_choice == '3':
+                    args.SetPageSize = True
+                    args.Landscape = True
+                else: # '1' or default
+                    args.SetPageSize = False # 自動
+
+            else: # '2' or default
                 paper_in = input("用紙サイズ [A4]: ")
                 args.PaperSize = paper_in if paper_in else "A4"
                 dpi_in = input("DPI [144]: ")
                 args.Dpi = int(dpi_in) if dpi_in else 144
+
+                # 用紙サイズ指定の場合、デフォルトは「縦向きで設定」
+                ps_prompt = "PDFページサイズ設定 (1:縦向きで設定, 2:横向きで設定, 3:自動) [1]: "
+                ps_choice = input(ps_prompt)
+                if ps_choice == '2':
+                    args.SetPageSize = True
+                    args.Landscape = True
+                elif ps_choice == '3':
+                    args.SetPageSize = False
+                else: # '1' or default
+                    args.SetPageSize = True
         print("-" * 40 + "\n")
 
     try:
@@ -746,6 +843,7 @@ def main():
     print("\n" + "=" * 40)
     print("All processing complete.")
     print("=" * 40)
+
 
 if __name__ == "__main__":
     main()
